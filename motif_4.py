@@ -34,7 +34,7 @@ tokens.from_numpy(token_array)
 
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=RES)
 
-# Fields to store line begin/end points and a flag to check if it's a drawable line
+# fields to store line begin and end points and a flag to check if it's a drawable line
 begin_pts = ti.Vector.field(2, dtype=ti.f32, shape=num_tokens)
 end_pts = ti.Vector.field(2, dtype=ti.f32, shape=num_tokens)
 draw_flag = ti.field(dtype=ti.i32, shape=num_tokens)
@@ -67,7 +67,6 @@ def pop():
 def compute_stages(lengthA: float, lengthB: float, angle: float):
     ti.loop_config(serialize=True)
     
-    # Normalize coordinates to [0.0, 1.0] for ti.GUI
     x = 250.0 / RES[0]
     y = 50.0 / RES[1]
     alpha = 90.0
@@ -77,40 +76,38 @@ def compute_stages(lengthA: float, lengthB: float, angle: float):
 
     for i in range(tokens.shape[0]):
         t = tokens[i]
-        draw_flag[i] = 0 # Default to not drawing
+        draw_flag[i] = 0 # don't draw
         
-        if t == 1 or t == 5:  # A or a
+        if t == 1 or t == 5:
             begin_pts[i] = [x, y]
             x += lenA * ti.cos(alpha * tm.pi / 180.0)
             y += lenA * ti.sin(alpha * tm.pi / 180.0)
             end_pts[i] = [x, y]
             draw_flag[i] = 1
             
-        elif t == 2 or t == 6:  # B or b
+        elif t == 2 or t == 6:
             begin_pts[i] = [x, y]
             x += lenB * ti.cos(alpha * tm.pi / 180.0)
             y += lenB * ti.sin(alpha * tm.pi / 180.0)
             end_pts[i] = [x, y]
             draw_flag[i] = 1
             
-        elif t == 3:  # +
+        elif t == 3: 
             alpha += angle
-        elif t == 4:  # -
+        elif t == 4: 
             alpha -= angle
-        elif t == 7:  # [
+        elif t == 7:  
             push(x, y, alpha)
-        elif t == 8:  # ]
+        elif t == 8:
             x, y, alpha = pop()
 
-# Compute the line coordinates
 compute_stages(side_length_A, side_length_B, angle)
 
-# Extract points back to NumPy to feed into the GUI line drawer
 begin_np = begin_pts.to_numpy()
 end_np = end_pts.to_numpy()
 flag_np = draw_flag.to_numpy()
 
-# Filter out only the coordinates that generated a line segment
+# only store valid line segments
 valid_begins = ti.Vector.field(2, dtype=ti.f32, shape=len(begin_np[flag_np == 1]))
 valid_ends = ti.Vector.field(2, dtype=ti.f32, shape=len(end_np[flag_np == 1]))
 valid_begins.from_numpy(begin_np[flag_np == 1])
@@ -144,7 +141,6 @@ def draw_outline():
             if dist < min_dist:
                 min_dist = dist
 
-        # Overwrite the pixel with black if it's close to a segment
         if min_dist <= line_thickness:
             pixels[i, j] = [0.0, 0.0, 0.0] 
 
