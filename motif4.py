@@ -83,14 +83,14 @@ def compute_stages(lengthA: float, lengthB: float, angle: float):
             x += lenA * ti.cos(alpha * tm.pi / 180.0)
             y += lenA * ti.sin(alpha * tm.pi / 180.0)
             end_pts[i] = [x, y]
-            draw_flag[i] = 1
+            draw_flag[i] = 1 if t == 1 else 0
             
         elif t == 2 or t == 6:
             begin_pts[i] = [x, y]
             x += lenB * ti.cos(alpha * tm.pi / 180.0)
             y += lenB * ti.sin(alpha * tm.pi / 180.0)
             end_pts[i] = [x, y]
-            draw_flag[i] = 1
+            draw_flag[i] = 1 if t == 2 else 0
             
         elif t == 3: 
             alpha += angle
