@@ -5,19 +5,24 @@ import cv2
 
 ti.init(arch=ti.gpu)
 
-RES = (600, 600)
+img_np = ti.tools.imread("motif_4.png") # change input file to your specific motif
 
-pixels = ti.Vector.field(3, dtype=ti.f32, shape=RES) # To hold image input
+RES = (img_np.shape[0], img_np.shape[1])
+RED = [1.0, 0.0, 0.0]
+
+
+pixels = ti.Vector.field(3, dtype=ti.f32, shape=RES) # To hold image input/output
+original_img= ti.Vector.field(3, dtype=ti.f32, shape=RES)
 region_labels = ti.field(dtype=ti.i32, shape=RES) # To hold the cv2 output
 
-img_np = ti.tools.imread("motif_4.png") # change input file to your specific motif
 pixels.from_numpy(img_np)
+original_img.from_numpy(img_np)
 
-gray_img = (img_np[:, :, 0] * 255).astype(np.uint8)
+gray_img = (img_np[:, :, 0] * 255).astype(np.uint8) # convert image to greyscale for open cv
 
 #num_labels = total number of regions
 #labels_np = numpy array storing the labelled motif
-num_labels, labels_np = cv2.connectedComponents(gray_img, connectivity=8)
+num_labels, labels_np = cv2.connectedComponents(gray_img, connectivity=4)
 region_labels.from_numpy(labels_np.astype(np.int32)) # store the numpy array as a grid of labelled pixels
 
 # @ti.func
@@ -36,7 +41,7 @@ region_labels.from_numpy(labels_np.astype(np.int32)) # store the numpy array as 
 
 # STITCH PLACEMENT, no longer uses ray casting
 @ti.kernel
-def render_stitches(angle: float, target_region: ti.i32, thread_thickness: ti.f32, gap_thickness: ti.f32):
+def render_stitches(angle: float, target_region: ti.i32, thread_thickness: ti.f32, gap_thickness: ti.f32, color: ti.types.vector(3, ti.f32)):
     rad = (angle * tm.pi / 180.0) #angle in radians
     p_ray_dir = ti.Vector([-tm.sin(rad), tm.cos(rad)]) # perpendicular vector, allows for the calculation of gaps
     
@@ -52,17 +57,25 @@ def render_stitches(angle: float, target_region: ti.i32, thread_thickness: ti.f3
             # draw using modular arithmetic:
             # - if p_distance < thread_thickness, draw thread, else leave gap
             if p_dist % period < thread_thickness:
-                pixels[i, j] = [1.0, 0.0, 0.0]  # Red fill
+                pixels[i, j] = color  # Red fill
             else:
                 pixels[i, j] = [1.0, 1.0, 1.0]  # White gap (or base fabric color)
+
+@ti.kernel
+def change_outline(color: ti.types.vector(3, ti.f32)):
+    for i, j in pixels:
+        is_outline = original_img[i, j] == [0.0, 0.0, 0.0]
+        if is_outline[0] and is_outline[1] and is_outline[2]:
+            pixels[i, j] = color
 
 #render stitches for all the regions
 for i in range(1, num_labels):
     if i != labels_np[0, 0]:
-        if i <= (num_labels/2):
-            render_stitches(-45.0, i, 1.5, 1.0)
-        else:
-            render_stitches(45.0, i, 1.5, 1.0)
+        render_stitches(90, i, 1.0, 0.3, RED)
+
+change_outline(RED)
+
+print("number of regions:", num_labels)
 
 # Set up Taichi GUI
 gui = ti.GUI("motif 4 filled", res=RES, background_color=0xFFFFFF)
