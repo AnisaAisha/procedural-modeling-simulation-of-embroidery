@@ -5,43 +5,30 @@ from IPython.display import display
 
 ti.init(arch=ti.gpu)
 
-# TODO: Add methods for the repetability of axioms. Need to connect to main for motif generation on cloth
+# TODO: Generalize code across all motifs
 
-# Areeba -- Axioms for Motif 2
-# Added -- at the start to rotate slightly
-axiom = "--[K++++aab----[------K]]aaa[K++++aab----[------K]]aaa[K++++aab----[------K]]"
-
-# Afeera -- Axioms for Motif 3
-# #triangles + diamonds
-# axiom_1= "[AAAAA-----A[+++aD]AA[+++aD]AA[+++aD]A----AAA][AAAAA+++++A[---aE]AA[---aE]AA[---aE]A++++AAA]" #blue
-# #botttom part
-# axiom_2= "[aaaaaa+++++AA+A+++++AA][aaaaaa-----AA-A-----AA]" \
-# "[aaaaaaa+++++AAA+A+++++AAA][aaaaaaa-----AAA-A-----AAA]"\
-# "[aaaaaaaa+++++AAAA+A+++++AAAA][aaaaaaaa-----AAAA-A-----AAAA]" 
-# #bottom part 2
-# axiom_3 =  "[---A--AAAA----A--AAAA++aA++AAA++++A++AAA--aaaA--AA----A--AA--a]"\
-# "[+++A++AAAA++++A++AAAA--aA--AAA----A--AAA++aaaA++AA++++A++AA--a]"
-# #top chevron
-# axiom_4 = "aaaaaaaaaaaa++++++" \
-# "[aaaaaa+++++A+A+++++A][aaaaaa-----A-A-----A]" \
-# "[aaaaaaa+++++AA+A+++++AA][aaaaaaa-----AA-A-----AA]"\
-
-# axiom = axiom_2 +"aaaaaaaa"+axiom_1 +axiom_3 +axiom_4
-
-# # Abbas -- Axiom for Motif 4
-# axiom = "[+BBHBHBHBHBH][-BBHBHBHBHBH]aFGM"
+# TODO: Bad code will update later
+axiom_3 = "[[---b[->>>>AAA----BBBB--AAABB]ab[->>>>AA----BBBB--AAB]ab[->>>>BBBBBBBB----BBBB--ABBB]ab[->>>>BBBB----BBBB--BBBBB]]"
 
 # Common rule set for all motifs
 rule = {"F" : "[+BBBBB-F[+BBBBB-]A[+BBBB+++++A]A[+BBB+++++A]A[+BB+++++A]A[+B+++++A]]",
-        'G': "[-BBBBB+G[-BBBBB+]A[-BBBB-----A]A[-BBB-----A]A[-BB-----A]A[-B-----A]]",
         'M': 'A[+BBBB+++++A][-BBBB-----A]A[+BBB+++++A][-BBB-----A]A[+BB+++++A][-BB-----A]A[+B+++++A][-B-----A]',
         'H': 'BH',
-        'R': "[-BBH+]A[-BH-----B]G",
-        'L': "[+BBH-]A[+BH+++++B]F",
-        'D':"[A-----A-A-----A]",
-        'E':"[A+++++A+A+++++A]",
-        'K': "[+++[+++BBBBB]+B[++BBBBB++++B]-+B[++BBBB++++B]-+B[++BBB++++B]-+B[++BB++++B]-+B[++B++++B][-+++aaa--b----AAA--b----AAA]]" # Can make this a closed shape by replacing B instead of b in the line part
-        }
+        'K': "[+++[+++BBBBB]+B[++BBBBB++++B]-+B[++BBBB++++B]-+B[++BBB++++B]-+B[++BB++++B]-+B[++B++++B][-+++aaa--b----AAA--b----AAA]]", # Can make this a closed shape by replacing B instead of b in the line part
+        'Q': "[BBBB-----BBBB-BBBB-----BBBB]", # small parallelogram
+        'W': axiom_3 + "---abb---aabb" + "[bb[BBBBB-----<<AAABB->>BBBBB---->>>>AAABB]abbbb-----abbb+++++[BBBBB-----<<AAB->>BBBBB---->>>>AAB]abbb-----bbbbbbb+++++[BBBB-----<<ABB->>BBBB---->>>>ABB]ab-----bbbbb+++++[BBBB-----<<BBBB->>BBBB---->>>>BBBB]]",
+        'X': "[[++++++AAAAAAB+++AAAABB]-----<BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB]",
+        'Z': "[+++[BBBB-----<<BBBBB->>>BBBB---->>>BBBBB]a[BBBB-----<<ABBBB->>>BBBB---->>>ABBBB]]",
+        'V': "[AAA+++++++++AA+++AAA+++++++++AA+++]", # Right Base (Leans Left)
+        'U': "[AAA---------AA---AAA---------AA---]", # Left Base (Leans Right)
+        
+        # --- New Structural Bricks (For Motif 1) ---
+        'v': "aaaaaaa",     # Vertical gap between rows
+        'c': "aa",          # Half of the center gap
+        # The Halves
+        'P': "[VvVvVvV]---aaaaa+++[VvVvV]---aaaaa+++[VvV]---aaaaa+++[V]", # Full Right Half (4, 3, 2, 1)
+        'C': "[UvUvUvU]+++aaaaa---[UvUvU]+++aaaaa---[UvU]+++aaaaa---[U]"  # Full Left Half (4, 3, 2, 1)
+      }
 
 # Function for parsing L-system rules and axioms
 def generate_l_system(axiom, rules, iterations):
@@ -57,10 +44,52 @@ def generate_l_system(axiom, rules, iterations):
     temp = ""
   return current_string
 
-# Motif 3 and 4
+ 
+def mirror(symbol, iterations=3):
+  # Non-recursive case: Expand the symbol, then swap angles from '+-<>' to '-+><'
+  mirror_table = str.maketrans('+-<>', '-+><')
+  if symbol not in rule[symbol]:
+    expanded = generate_l_system(symbol, rule, iterations)
+    return expanded.translate(mirror_table)
+
+  # Recursive symbol case: Swap the angles and store the axiom in a temp symbol
+  # Change the original symbol in the axiom to temp symbol for recursive call
+  rules_copy = rule.copy()
+  temp_symbol = 'x'
+  if symbol in rules_copy:
+      mirror_angles = rules_copy[symbol].translate(mirror_table)      
+      rules_copy[temp_symbol] = mirror_angles.replace(symbol, temp_symbol)
+  
+  # Expand and remove temp symbol
+  expanded = generate_l_system(temp_symbol, rules_copy, iterations)
+  return expanded.replace(temp_symbol, "") 
+
+ITERATIONS = 3
+ 
+"""
+  MOTIF GENERATION AXIOMS START HERE
+"""
+ 
+# Areeba -- Axiom for Motif 1
+# axiom = "[aa[------c++++++P][++++++c------C]][++++++aa[------c++++++P][++++++c------C]][++++++++++++aa[------c++++++P][++++++c------C]][------aa[------c++++++P][++++++c------C]]"
+
+# Areeba -- Axioms for Motif 2
+# Added -- at the start to rotate slightly
+axiom = "--[K++++aab----[------K]]aaa[K++++aab----[------K]]aaa[K++++aab----[------K]]"
+
+# Afeera -- Updated axioms for Motif 3
+# top = "[Z[------" + mirror("Z", ITERATIONS) + "]]"
+# axiom0 = "[+++X+++bb---[" + mirror("X", ITERATIONS) + "]]+++abbbb+++b" + top
+# axiom = axiom0 + "+++aaaaaaabbbbb+++bbbbb[+++W---aaa---aabb[" + mirror("W", ITERATIONS) + "]]"
+
+# Abbas -- Axiom for Motif 4
+# axiom = "[+BBHBHBHBHBH][-BBHBHBHBHBH]aF" + mirror("F", 2) + "M"
+
+#####
+
 final_str = generate_l_system(axiom, rule, 2)
 
-char_to_token = {'A': 1, 'B' : 2, '+': 3, '-': 4, 'a': 5, 'b': 6, '[': 7, ']': 8, 'F': 9, 'G': 10, 'R': 11, 'L': 12, 'H': 13, 'M': 14, 'T': 15}
+char_to_token = {'A': 1, 'B' : 2, '+': 3, '-': 4, 'a': 5, 'b': 6, '[': 7, ']': 8, 'F': 9, 'G': 10, 'R': 11, 'L': 12, 'H': 13, 'M': 14, 'T': 15, '>': 16, '<': 17, 'V': 18, 'v': 19, 'U': 20}
 token_list = [char_to_token[i] for i in final_str]
 print(final_str)
 token_array = np.array(token_list, dtype=np.int32)
@@ -100,10 +129,21 @@ def compute_stages(lengthA: float, lengthB: float, angle: float):
 
   stack = []
 
+  # For motif 2 & 4
   x = 250.0
   y = 50.0
-
   alpha = 90.0
+
+  # For motif 1
+  # x = 300.0
+  # y = 300.0
+  # alpha = 0.0
+
+  # For motif 3
+  # x = 250.0
+  # y = 400.0
+  # alpha = 0.0
+
   for i in range(tokens.shape[0]):
     start_x[i] = x
     start_y[i] = y
@@ -124,6 +164,10 @@ def compute_stages(lengthA: float, lengthB: float, angle: float):
       push(x, y, alpha)
     elif t == 8:
       x, y, alpha = pop()
+    elif t == 16:
+      alpha -= 5.0
+    elif t == 17:
+      alpha += 5.0
     else:
       continue
 
@@ -164,17 +208,28 @@ def draw_in_parallel(lengthA: float, lengthB: float):
           pixels[px, py] = 0.0  # Draw line in BLACK
 
 
+pixels.fill(1.0)
+
+# Areeba -- Motif 1
+# side_length_A = 6.0
+# side_length_B = 6.0
+# angle = 15.0
+# compute_stages(side_length_A, side_length_B, angle)
+# draw_in_parallel(side_length_A, side_length_B)
+
+
+# # Afeera -- Motif 3
+# side_length_A = 30.0
+# side_length_B = 5.0
+# angle = 30.0
+# compute_stages(side_length_A, side_length_B, angle)
+# draw_in_parallel(side_length_A, side_length_B)
+
+
+# Abbas/Areeba -- Motif 2 & 4
 side_length_A = 30.0
 side_length_B = 15.0
 angle = 30.0
-
-pixels.fill(1.0)
-
-# Afeera -- Motif 3
-# compute_stages(side_length_A, side_length_A, angle)
-# draw_in_parallel(side_length_A, side_length_A)
-
-# Abbas/Areeba -- Motif 2 & 4
 compute_stages(side_length_A, side_length_B, angle)
 draw_in_parallel(side_length_A, side_length_B)
 
