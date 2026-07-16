@@ -5,7 +5,7 @@ import taichi as ti
 """
 
 # Window resolution
-RES = (500, 500)
+RES = (800, 800)
 
 # Grid mesh parameters and variables
 grid_cols = 12
@@ -14,11 +14,16 @@ spacing = 0.25
 num_vertices = grid_cols * grid_rows
 num_triangles = (grid_rows - 1) * (grid_cols - 1) * 2
 
+# Cloth Texture constraints and file paths 
+BUMP_STRENGTH = 0.01
+BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
+ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
+
 # Cloth Simulation Constants
 
 dt = 5e-4 # small time step
 # Forces
-gravity = ti.Vector([0, -0.5, 0])
+gravity = ti.Vector([0, -3.5, 0])
 drag_damping = 0.1
 
 # Spring constants
