@@ -1,3 +1,6 @@
+
+# ============================== OLD CODE NOT BEING USED ANYMORE =====================================
+
 import taichi as ti
 import numpy as np
 from PIL import Image
