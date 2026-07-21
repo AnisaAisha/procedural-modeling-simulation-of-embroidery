@@ -12,18 +12,40 @@ from constants import *
 
 # Generate vertices and space them out in the form of a grid
 # Initialize each vertex as a Particle data class (struct definition in constants.py)
+# @ti.kernel
+# def build_vertices(vertices: ti.template(), particles: ti.template()):
+#     for i, j in ti.ndrange(grid_rows, grid_cols):
+#         idx = i * grid_cols + j
+#         pos = ti.math.vec3((j * spacing) - (grid_cols - 1) * spacing / 2,  2.0, (i * spacing) - (grid_rows - 1) * spacing / 2)
+#         vertices[idx] = pos
+#         particles[idx] = Particle(pos, pos, 0.0, 1.0, 0.0)
+
+#     # Fix two corners
+#     for i, j in ti.ndrange(grid_rows, grid_cols):
+#         particles[j].is_fixed = 1       # at (0 * grid_cols + j)
+
+
 @ti.kernel
-def build_vertices(vertices: ti.template(), particles: ti.template()):
+def build_vertices(n: ti.i32, displace: ti.i32, vertices: ti.template(), particles: ti.template(), heightmap: ti.template()):
     for i, j in ti.ndrange(grid_rows, grid_cols):
         idx = i * grid_cols + j
-        pos = ti.math.vec3((j * spacing) - (grid_cols - 1) * spacing / 2,  2.0, (i * spacing) - (grid_rows - 1) * spacing / 2)
+        u = j / (grid_cols - 1)
+        v = i / (grid_rows - 1)
+        x = (j * spacing) - (grid_cols - 1) * spacing / 2
+        z = (i * spacing) - (grid_rows - 1) * spacing / 2
+        y = 2.0
+        # pos = ti.math.vec3((j * spacing) - (grid_cols - 1) * spacing / 2,  2.0, (i * spacing) - (grid_rows - 1) * spacing / 2)
+        if displace == 1:
+            tx = ti.cast(u * (n - 1), ti.i32)
+            ty = ti.cast(v * (n - 1), ti.i32)
+            y += heightmap[tx, ty] * HEIGHT_SCALE
+        pos = ti.math.vec3(x, y, z)
         vertices[idx] = pos
         particles[idx] = Particle(pos, pos, 0.0, 1.0, 0.0)
 
     # Fix two corners
     for i, j in ti.ndrange(grid_rows, grid_cols):
         particles[j].is_fixed = 1       # at (0 * grid_cols + j)
-
 
 # Index references of the vertices - this helps identify which vertices will be connected together
 @ti.kernel

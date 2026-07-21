@@ -9,7 +9,7 @@ grid_cols = 800
 grid_rows = 800
 
 TOTAL_SIZE = (12 - 1) * 0.25
-spacing = TOTAL_SIZE / (grid_cols - 1)
+spacing = 0.25
 
 num_triangles = (grid_rows - 1) * (grid_cols - 1) * 2
 num_vertices = grid_rows * grid_cols
@@ -133,12 +133,12 @@ camera = ti.ui.Camera()
 
 print("Rendering scene...")
 while window.running:
-    camera.position(0.0, 5.0, 0.5)
+    camera.position(0.0, 1000.0, 0.5)
     camera.lookat(0.0, 0.0, 0.0)
     scene.set_camera(camera)
 
     scene.ambient_light((0.4, 0.4, 0.4))
-    scene.point_light(pos=(2.0, 3.0, 3.0), color=(1.0, 1.0, 1.0))
+    scene.point_light(pos=(2.0, 40.0, 3.0), color=(1.0, 1.0, 1.0))
 
     scene.mesh(
         vertices,

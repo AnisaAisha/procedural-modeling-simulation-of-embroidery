@@ -17,7 +17,8 @@ SLOPE_SCATTER = 0.1        # 0.1 for khaddar, same for cotton
 
 # Output file paths
 BUMP_MAP = "outputs/smooth_weave_bump_map.png"
-ROUGHNESS_MAP = "outputs/weave_roughness_map.png"
+# ROUGHNESS_MAP = "outputs/weave_roughness_map.png"
+ROUGHNESS_MAP = "motif_roughness.png"
 
 def smooth_random_field(n, low_res, rng):
     low_res = max(2, int(low_res))
@@ -107,4 +108,4 @@ def generate_roughness_map(input_file_path):
     cv.imwrite(ROUGHNESS_MAP, roughness_uint8)
 
 generate_bump_map(RESOLUTION)
-generate_roughness_map(BUMP_MAP)
+generate_roughness_map('displacement_map.png')

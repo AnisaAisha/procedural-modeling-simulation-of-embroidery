@@ -22,24 +22,61 @@ def make_texture(tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba32
         ret = ti.cast(taichi_logo(ti.Vector([i, j]) / n), ti.f32)
         tex.store(ti.Vector([i, j]), ti.Vector([ret, ret, ret, 0.0]))
 
-# Get the texture at each vertex's UV coordinate (stored in uvs array) and assign colors per-vertex
 @ti.kernel
-def sample_vertex_colors(roughness_field: ti.template() ,tex: ti.types.texture(num_dimensions=2), n: ti.i32, uvs: ti.template(), colors: ti.template(), num_vertices: ti.i32):
+def load_texture(tex: ti.types.rw_texture(num_dimensions=2, fmt=ti.Format.rgba32f, lod=0), n: ti.i32, motif_field: ti.template()):
+    for i, j in ti.ndrange(n, n):
+        c = motif_field[i, j]
+        tex.store(ti.Vector([i, j]), ti.Vector([c[0], c[1], c[2], 1.0]))
+
+# Get the texture at each vertex's UV coordinate (stored in uvs array) and assign colors per-vertex
+# @ti.kernel
+# def sample_vertex_colors(roughness_field: ti.template() ,tex: ti.types.texture(num_dimensions=2), n: ti.i32, uvs: ti.template(), colors: ti.template(), num_vertices: ti.i32):
+#     for idx in range(num_vertices):
+#         uv = uvs[idx]
+#         val = tex.fetch(ti.cast(uv * n, ti.i32), 0) # fetch the uv value, and interpolate texture image pixels on mesh
+        
+#         # Read the roughness field using UV mapping
+#         tx = ti.cast(uv.x * (n - 1), ti.i32)
+#         ty = ti.cast(uv.y * (n - 1), ti.i32)
+#         roughness = roughness_field[tx, ty]
+        
+#         # Ambient Occlusion Trick: Darken the solid base color in the deep crevices
+#         # Where roughness is high (valleys), ao drops below 1.0 to shadow the areas
+#         ao = 1.0 - (roughness * 0.4) 
+
+#         colors[idx] = ti.Vector([val.r, val.g, val.b]) * ao  # actual texture map along with roughness
+#         # colors[idx] = ti.Vector([0.96, 0.96, 0.86]) * ao # base color along with 
+
+
+# Get the texture at each vertex's UV coordinate and assign colors per-vertex (does not apply roughness map on displacement areeas)
+@ti.kernel
+def sample_vertex_colors(
+    roughness_field: ti.template(), 
+    heightmap: ti.template(),     # <-- ADDED: Pass the displacement map
+    tex: ti.types.texture(num_dimensions=2), 
+    n: ti.i32, 
+    uvs: ti.template(), 
+    colors: ti.template(), 
+    num_vertices: ti.i32
+):
     for idx in range(num_vertices):
         uv = uvs[idx]
-        val = tex.fetch(ti.cast(uv * n, ti.i32), 0) # fetch the uv value, and interpolate texture image pixels on mesh
+        val = tex.fetch(ti.cast(uv * n, ti.i32), 0) 
         
-        # Read the roughness field using UV mapping
+        # Read the fields using UV mapping
         tx = ti.cast(uv.x * (n - 1), ti.i32)
         ty = ti.cast(uv.y * (n - 1), ti.i32)
-        roughness = roughness_field[tx, ty]
         
-        # Ambient Occlusion Trick: Darken the solid base color in the deep crevices
-        # Where roughness is high (valleys), ao drops below 1.0 to shadow the areas
-        ao = 1.0 - (roughness * 0.4) 
+        roughness = roughness_field[tx, ty]
+        displacement = heightmap[tx, ty]  # <-- ADDED: Read displacement height
+        
+        # If displacement is 1.0 (raised), mask is 0.0 (turns off roughness).
+        # If displacement is 0.0 (flat), mask is 1.0 (keeps roughness).
+        mask = 1.0 - displacement
+        
+        ao = 1.0 - (roughness * 0.4 * mask) 
 
-        # colors[idx] = ti.Vector([val.r, val.g, val.b]) * ao  # actual texture map along with roughness
-        colors[idx] = ti.Vector([0.96, 0.96, 0.86]) * ao # base color along with 
+        colors[idx] = ti.Vector([val.r, val.g, val.b]) * ao
 
 
 @ti.kernel
@@ -67,5 +104,34 @@ def compute_bump_normals(normals: ti.template(), bump_field: ti.template(), bump
         # the base vector is (0, 1, 0) pointing straight up.
         # we subtract the slopes to tilt it in the X and Z directions.
         nrm = ti.Vector([-slope_x, 1.0, -slope_z]).normalized()
+        
+        normals[idx] = nrm
+
+
+
+@ti.kernel
+def compute_normals_from_map(normals: ti.template(), normal_field: ti.template(), n: ti.i32, grid_rows: ti.i32, grid_cols: ti.i32):
+    for i, j in ti.ndrange(grid_rows, grid_cols):
+        idx = i * grid_cols + j
+        
+        # Map vertex to image coordinates
+        u = j / (grid_cols - 1)
+        v = i / (grid_rows - 1)
+        tx = ti.cast(u * (n - 1), ti.i32)
+        ty = ti.cast(v * (n - 1), ti.i32)
+        
+        # Read RGB from normal map
+        rgb = normal_field[tx, ty]
+        
+        # Convert from [0.0, 1.0] to [-1.0, 1.0] range
+        nx = rgb[0] * 2.0 - 1.0
+        ny = rgb[1] * 2.0 - 1.0
+        nz = rgb[2] * 2.0 - 1.0
+        
+        # Map normal map axes to your 3D space:
+        # Red (X) -> 3D X axis
+        # Green (Y) -> 3D Z axis (since the cloth is flat on the XZ plane)
+        # Blue (Z) -> 3D Y axis (the vertical upward direction)
+        nrm = ti.Vector([nx, nz, ny]).normalized()
         
         normals[idx] = nrm
