@@ -3,62 +3,80 @@
 """
 
 import taichi as ti
+import numpy as np
 from constants import *
-from textures import *
 from cloth_simulation import *
+from run_all import load_texture_maps, MOTIF_KEY, K
 
-ti.init(arch=ti.gpu)
-
+ti.init(arch=ti.vulkan, default_ip=ti.i32)
 
 # Grid and Cloth Simulation Initializations
-vertices = ti.Vector.field(3, dtype=ti.f32, shape=grid_rows*grid_cols)
-indices = ti.field(int, shape=num_triangles * 3)
+vertices = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)
+normals = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)
+colors = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)
+indices = ti.field(dtype=ti.i32, shape=num_triangles * 3)
 springs = Spring.field(shape=num_springs)
-particles = Particle.field(shape=grid_rows*grid_cols)
+particles = Particle.field(shape=num_vertices)
+spring_counter = ti.field(ti.i32, shape=())
 
 build_vertices(vertices, particles)
 build_indices(indices)
-init_springs_state(particles, springs)
+init_springs_state(particles, springs, spring_counter)
 
-# Texture Initializations
-k = 256     # texture image dimension
-uvs = ti.Vector.field(2, dtype=ti.f32, shape=num_vertices)      # one 2D texture coordinate (u, v) per vertex
-colors = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)   # one color value i.e. (R, G, B) per vertex
-texture = ti.Texture(ti.Format.r32f, (k, k))
+# Load Texture Maps
+print("Loading textures...")
+color_np, height_np, normal_np = load_texture_maps(MOTIF_KEY, K)
 
-build_uvs(uvs, grid_rows, grid_cols)
-make_texture(texture, k) # load texture
-sample_vertex_colors(texture, k, uvs, colors, num_vertices) # assign texture to mesh
+if color_np is None:
+    print("Failed to load maps.")
+    exit(1)
+
+color_field = ti.Vector.field(3, dtype=ti.f32, shape=(K, K))
+height_field = ti.field(dtype=ti.f32, shape=(K, K))
+normal_map_field = ti.Vector.field(3, dtype=ti.f32, shape=(K, K))
+
+color_field.from_numpy(np.ascontiguousarray(color_np.astype(np.float32)))
+height_field.from_numpy(np.ascontiguousarray(height_np.astype(np.float32)))
+normal_map_field.from_numpy(np.ascontiguousarray(normal_np.astype(np.float32)))
 
 # GUI Initializations
 window = ti.ui.Window("Textured Cloth Simulation", RES)
 canvas = window.get_canvas()
-scene = ti.ui.Scene()
+scene = window.get_scene()
 camera = ti.ui.Camera()
 
-# Cloth simulation parameters
-substeps = 15
-current_t = 0.0 # initial time
+# Initialize Camera
+camera.position(0.0, 5.0, 3.0)
+camera.lookat(0.0, 1.0, 0.0)
 
+light_angle = 0.0
+# Render Loop
 while window.running:
-    # Run the cloth simulation for substeps number of times, and advance each step by dt
-    for i in range(substeps):
+    
+    # 1. Physics
+    for _ in range(30):
         substep(particles, springs)
-        current_t += dt 
-    update_vertices(vertices, particles)
-
-    # Scene setup
-    camera.position(2.0, 2.0, 6.0)
-    camera.lookat(0.0, 0.0, 0.0)
+        
+    update_vertices_textured(
+        vertices, particles, normals, colors,
+        height_field, color_field, normal_map_field,
+        0.06, 0.85, K
+    )
+    
+    # 2. Camera View
+    camera.track_user_inputs(window, movement_speed=0.03, hold_key=ti.ui.RMB)
     scene.set_camera(camera)
-
-    scene.point_light(pos=(2, 2, 2), color=(1, 1, 1))
-    scene.ambient_light((0.2, 0.2, 0.2))  # brighten everything!
-
-    scene.ambient_light((0.05, 0.05, 0.05))
-    scene.point_light(pos=(1.0, 2.0, 2.0), color=(0.8, 0.8, 1.0))  # cool white light
-
-    scene.mesh(vertices, indices=indices, two_sided=True, per_vertex_color=colors)
-
+    
+    # 3. Ambient and Point Lights
+    light_angle += 0.02
+    light_x = np.sin(light_angle) * 3.0
+    light_z = np.cos(light_angle) * 3.0
+    
+    scene.ambient_light((0.45, 0.45, 0.45))
+    scene.point_light(pos=(light_x, 3.0, light_z), color=(1.0, 1.0, 1.0))
+    
+    # 4. Rendering
+    scene.mesh(vertices, indices=indices, normals=normals, per_vertex_color=colors, two_sided=True)
     canvas.scene(scene)
+    
     window.show()
