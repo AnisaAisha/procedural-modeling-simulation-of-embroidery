@@ -5,12 +5,13 @@ import taichi as ti
 """
 
 # Window resolution
-RES = (500, 500)
+RES = (1024, 768)
 
 # Grid mesh parameters and variables
-grid_cols = 12
-grid_rows = 12
-spacing = 0.25
+grid_cols = 256
+grid_rows = 256
+TOTAL_SIZE = (12 - 1) * 0.25
+spacing = TOTAL_SIZE / (grid_cols - 1)
 num_vertices = grid_cols * grid_rows
 num_triangles = (grid_rows - 1) * (grid_cols - 1) * 2
 

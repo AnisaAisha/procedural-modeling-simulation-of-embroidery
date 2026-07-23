@@ -43,35 +43,47 @@ def build_indices(indices: ti.template()):
 
 # Initialize 3 types of springs (structural, shear, bending), runs once at startup.
 # Loop over the grid and populate the springs that impact each particle (and its neighbors)
-def init_springs_state(particles: ti.template(), springs: ti.template()):
-    s_idx = 0
+@ti.kernel
+def init_springs_state(particles: ti.template(), springs: ti.template(), spring_counter: ti.template()):
+    spring_counter[None] = 0
 
     for i, j in ti.ndrange(grid_rows, grid_cols):
         idx = i * grid_cols + j
         if j < grid_cols - 1:
             right_idx = i * grid_cols + (j + 1)
-            springs[s_idx] = Spring(idx, right_idx, (particles[idx].pos - particles[right_idx].pos).norm(), spring_k_structural)
-            s_idx += 1
+            dist = (particles[idx].pos - particles[right_idx].pos).norm()
+            s_idx = ti.atomic_add(spring_counter[None], 1)
+            springs[s_idx] = Spring(idx, right_idx, dist, spring_k_structural)
+            
         if i < grid_rows - 1:
             bottom_idx = (i+1) * grid_cols + j
-            springs[s_idx] = Spring(idx, bottom_idx, (particles[idx].pos - particles[bottom_idx].pos).norm(), spring_k_structural)
-            s_idx += 1
+            dist = (particles[idx].pos - particles[bottom_idx].pos).norm()
+            s_idx = ti.atomic_add(spring_counter[None], 1)
+            springs[s_idx] = Spring(idx, bottom_idx, dist, spring_k_structural)
+            
         if i < grid_rows - 1 and j < grid_cols - 1:
             bottom_right = (i + 1) * grid_cols + (j + 1)
-            springs[s_idx] = Spring(idx, bottom_right, (particles[idx].pos - particles[bottom_right].pos).norm(), spring_k_shear)
-            s_idx += 1
+            dist = (particles[idx].pos - particles[bottom_right].pos).norm()
+            s_idx = ti.atomic_add(spring_counter[None], 1)
+            springs[s_idx] = Spring(idx, bottom_right, dist, spring_k_shear)
+            
         if i < grid_rows - 1 and j > 0:
             bottom_left = (i + 1) * grid_cols + (j - 1)
-            springs[s_idx] = Spring(idx, bottom_left, (particles[idx].pos - particles[bottom_left].pos).norm(), spring_k_shear)
-            s_idx += 1
+            dist = (particles[idx].pos - particles[bottom_left].pos).norm()
+            s_idx = ti.atomic_add(spring_counter[None], 1)
+            springs[s_idx] = Spring(idx, bottom_left, dist, spring_k_shear)
+            
         if j < grid_cols - 2:
             right2 = i * grid_cols + (j + 2)
-            springs[s_idx] = Spring(idx, right2, (particles[idx].pos - particles[right2].pos).norm(), spring_k_bend)
-            s_idx += 1
+            dist = (particles[idx].pos - particles[right2].pos).norm()
+            s_idx = ti.atomic_add(spring_counter[None], 1)
+            springs[s_idx] = Spring(idx, right2, dist, spring_k_bend)
+            
         if i < grid_rows - 2:
             bottom2 = (i + 2) * grid_cols + j
-            springs[s_idx] = Spring(idx, bottom2, (particles[idx].pos - particles[bottom2].pos).norm(), spring_k_bend)
-            s_idx += 1
+            dist = (particles[idx].pos - particles[bottom2].pos).norm()
+            s_idx = ti.atomic_add(spring_counter[None], 1)
+            springs[s_idx] = Spring(idx, bottom2, dist, spring_k_bend)
 
 
 # Compute if the endpoints of the spring will move towards or away from each other
@@ -127,3 +139,62 @@ def update_vertices(vertices: ti.template(), particles:ti.template()):
     for i, j in ti.ndrange(grid_rows, grid_cols):
         idx = i * grid_cols + j
         vertices[idx] = particles[idx].pos
+
+@ti.kernel
+def update_vertices_textured(
+    vertices: ti.template(), particles: ti.template(), normals: ti.template(), colors: ti.template(),
+    height_field: ti.template(), color_field: ti.template(), normal_map_field: ti.template(),
+    h_scale: ti.f32, detail_strength: ti.f32, k: ti.i32
+):
+    # Pass 1: Apply color, position, and displacement
+    for i, j in ti.ndrange(grid_rows, grid_cols):
+        idx = i * grid_cols + j
+        u = j / (grid_cols - 1)
+        v = i / (grid_rows - 1)
+        
+        tx = ti.cast(u * (k - 1), ti.i32)
+        ty = ti.cast(v * (k - 1), ti.i32)
+        
+        colors[idx] = color_field[tx, ty]
+        
+        i0, i1 = ti.max(i - 1, 0), ti.min(i + 1, grid_rows - 1)
+        j0, j1 = ti.max(j - 1, 0), ti.min(j + 1, grid_cols - 1)
+        
+        vL = particles[i * grid_cols + j0].pos
+        vR = particles[i * grid_cols + j1].pos
+        vD = particles[i0 * grid_cols + j].pos
+        vU = particles[i1 * grid_cols + j].pos
+        
+        geo_normal = (vU - vD).cross(vR - vL).normalized()
+        
+        base_pos = particles[idx].pos
+        disp = height_field[tx, ty] * h_scale
+        vertices[idx] = base_pos + geo_normal * disp
+
+    # Pass 2: Calculate dynamic TBN blended normals
+    for i, j in ti.ndrange(grid_rows, grid_cols):
+        idx = i * grid_cols + j
+        u = j / (grid_cols - 1)
+        v = i / (grid_rows - 1)
+        
+        tx = ti.cast(u * (k - 1), ti.i32)
+        ty = ti.cast(v * (k - 1), ti.i32)
+        
+        i0, i1 = ti.max(i - 1, 0), ti.min(i + 1, grid_rows - 1)
+        j0, j1 = ti.max(j - 1, 0), ti.min(j + 1, grid_cols - 1)
+        
+        vL = vertices[i * grid_cols + j0]
+        vR = vertices[i * grid_cols + j1]
+        vD = vertices[i0 * grid_cols + j]
+        vU = vertices[i1 * grid_cols + j]
+        
+        tangent = (vR - vL).normalized()
+        bitangent = (vU - vD).normalized()
+        geo = bitangent.cross(tangent).normalized()
+        
+        nx = normal_map_field[tx, ty][0] * 2.0 - 1.0
+        ny = normal_map_field[tx, ty][1] * 2.0 - 1.0
+        nz = normal_map_field[tx, ty][2] * 2.0 - 1.0
+        
+        detail_world = (nx * tangent) + (nz * bitangent) + (ny * geo)
+        normals[idx] = (geo + detail_strength * (detail_world - geo)).normalized()
