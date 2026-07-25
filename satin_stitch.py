@@ -5,7 +5,7 @@ import cv2
 
 ti.init(arch=ti.gpu)
 
-img_np = ti.tools.imread("motif_4.png") # change input file to your specific motif
+img_np = ti.tools.imread("outputs/motif_4.png") # change input file to your specific motif
 
 RES = (img_np.shape[0], img_np.shape[1])
 RED = [1.0, 0.0, 0.0]
