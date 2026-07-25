@@ -13,8 +13,8 @@ ti.init(arch=ti.opengl)
 
 BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
 ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
-DISPLACEMENT_MAP_PATH = "displacement_map.png"
-NORMAL_MAP_PATH = "motif_4_filled_normal.png"
+DISPLACEMENT_MAP_PATH = "outputs/displacement_map.png"
+NORMAL_MAP_PATH = "outputs/motif_4_filled_normal.png"
 
 motifs = {
     "1": "outputs/motif_1_filled.png",
