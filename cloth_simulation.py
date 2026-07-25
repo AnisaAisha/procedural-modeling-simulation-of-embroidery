@@ -25,6 +25,7 @@ from constants import *
 #         particles[j].is_fixed = 1       # at (0 * grid_cols + j)
 
 
+# added displacement map usage
 @ti.kernel
 def build_vertices(n: ti.i32, displace: ti.i32, vertices: ti.template(), particles: ti.template(), heightmap: ti.template()):
     for i, j in ti.ndrange(grid_rows, grid_cols):
