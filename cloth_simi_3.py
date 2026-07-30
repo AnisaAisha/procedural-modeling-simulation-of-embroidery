@@ -13,25 +13,25 @@ MOTIFS = {
     "1": "outputs/motif_1_filled.png",
     "2": "outputs/motif_2_filled.png",
     "3": "outputs/motif_3_filled.png",
-    "4": "outputs/motif_4_filled.png",
+    "4": "outputs/motif-4_filled.png",
 }
 MOTIF_KEY = "4"
 INPUT_IMAGE = MOTIFS.get(MOTIF_KEY)
 
 # File Paths for New Maps
-BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
-ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
+BUMP_MAP_PATH = "outputs/subtracted_bump.png"
+ROUGHNESS_MAP_PATH = "outputs/subtracted_roughness.png"
 BUMP_STRENGTH = 0.005
 
 # Map and Grid settings
-K = 512
-GRID_ROWS = 256
-GRID_COLS = 256
+K = 1024
+GRID_ROWS = 800
+GRID_COLS = 800
 CLOTH_WIDTH = 7.0
 CLOTH_HEIGHT = 7.0
 
 # TOTAL_SIZE = (grid_cols - 1) * 0.25
-spacing = CLOTH_HEIGHT / (GRID_COLS-1)
+spacing = 0.25
 HEIGHT_SCALE = 0.06
 
 num_vertices = GRID_ROWS * GRID_COLS
@@ -289,7 +289,7 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     input_path = os.path.join(here, INPUT_IMAGE)
     height_path = "displacement_map.png"
-    normal_path = os.path.join(here, f"motif_{MOTIF_KEY}_filled_normal.png")
+    normal_path = os.path.join(here, f"outputs/motif-{MOTIF_KEY}_filled_normal.png")
     bump_path = os.path.join(here, BUMP_MAP_PATH)
     roughness_path = os.path.join(here, ROUGHNESS_MAP_PATH)
     
@@ -347,7 +347,7 @@ if __name__ == "__main__":
     scene = window.get_scene()
     camera = ti.ui.Camera()
     
-    camera.position(0.0, 8.0, 3.0)
+    camera.position(0.0, 200.0, 3.0)
     camera.lookat(0.0, 1.0, 0.0)
     
     light_angle = 0.0
