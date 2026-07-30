@@ -1,25 +1,39 @@
-import taichi as ti
-import taichi.math as tm
-import numpy as np
-from PIL import Image
+import cv2 as cv
 
 BUMP_MAP = 'outputs/smooth_weave_bump_map.png'
-NORMAL_MAP = "outputs/motif_4_filled_normal.png"
+HEIGHT_MAP = "outputs/motif-4_filled_height.png"
+ROUGHNESS_MAP = "outputs/weave_roughness_map.png"
+BASE_MAP = "outputs/motif-4_filled.png"
 
-k = 1024
+def subtract():
+    img1 = cv.imread(ROUGHNESS_MAP)
+    img2 = cv.imread(HEIGHT_MAP)
 
-bump_img = Image.open(BUMP_MAP).convert("L").resize((k, k), Image.BILINEAR)
-bump_np = np.array(bump_img)
+    if img1 is None or img2 is None:
+        print("Error: Could not load one or both images. Check file paths.")
+        return
 
-normal_img = Image.open(NORMAL_MAP).convert("RGB").resize((k, k), Image.BILINEAR)
-if normal_img.size != bump_img.size:
-        print("Resizing height map to match normal map dimensions...")
-        bump_img = bump_img.resize(normal_img.size, Image.BILINEAR)
-normal_np = np.array(normal_img)
+    print(f"Img1 shape: {img1.shape}, Img2 shape: {img2.shape}")
 
-def composite():
-    composited_array = np.dstack((normal_np, bump_img))
-    composited_img = Image.fromarray(composited_array, mode="RGBA")
-    composited_img.save('outputs/composited_map.png')
+    # FIX 1: cv.resize expects (width, height), but .shape gives (height, width)
+    target_size = (img2.shape[1], img2.shape[0])
+    img1 = cv.resize(img1, target_size)
 
-composite()
+    # FIX 2: Match channels if one is grayscale and the other is color
+    # Note: cv.imread loads images as 3-channel BGR by default unless cv.IMREAD_GRAYSCALE is specified.
+    if len(img2.shape) != len(img1.shape):
+        if len(img1.shape) == 3 and len(img2.shape) == 2:
+            # Convert img2 from grayscale to BGR color
+            img2 = cv.cvtColor(img2, cv.COLOR_GRAY2BGR)
+        elif len(img1.shape) == 2 and len(img2.shape) == 3:
+            # Convert img2 from color to grayscale
+            img2 = cv.cvtColor(img2, cv.COLOR_BGR2GRAY)
+            
+    # Perform the subtraction (OpenCV automatically clamps values at 0 to prevent underflow)
+    subtracted = cv.subtract(img1, img2)
+
+    cv.imwrite("outputs/subtracted_roughness.png", subtracted)
+    print("Success: Saved to outputs/subtracted_roughness.png")
+
+if __name__ == "__main__":
+    subtract()

@@ -88,7 +88,7 @@ def process_image(image_path, out_dir=".", size=512):
     height = (ridge * amplitude).astype(np.float32)
     
     # Normal map from sharp height
-    normal_rgb, _ = generate_normal_map(height, strength=1.5)
+    normal_rgb, _ = generate_normal_map(height, strength=15.0)
     
     # Smooth height for displacement map
     height_disp = cv2.GaussianBlur(height, (0, 0), 2.0)

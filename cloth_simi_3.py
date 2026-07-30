@@ -31,7 +31,7 @@ CLOTH_WIDTH = 7.0
 CLOTH_HEIGHT = 7.0
 
 # TOTAL_SIZE = (grid_cols - 1) * 0.25
-spacing = 0.25
+spacing = CLOTH_HEIGHT/ (GRID_COLS-1)
 HEIGHT_SCALE = 0.06
 
 num_vertices = GRID_ROWS * GRID_COLS
@@ -347,7 +347,7 @@ if __name__ == "__main__":
     scene = window.get_scene()
     camera = ti.ui.Camera()
     
-    camera.position(0.0, 200.0, 3.0)
+    camera.position(0.0, 8.0, 3.0)
     camera.lookat(0.0, 1.0, 0.0)
     
     light_angle = 0.0
