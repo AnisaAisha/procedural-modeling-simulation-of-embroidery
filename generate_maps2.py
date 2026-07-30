@@ -8,7 +8,7 @@ MOTIFS = {
     "1": "outputs/motif_1_filled.png",
     "2": "outputs/motif_2_filled.png",
     "3": "outputs/motif_3_filled.png",
-    "4": "outputs/motif_4_filled.png",
+    "4": "outputs/motif-4_filled.png",
 }
 MOTIF_KEY = "4" #change this key for motif needed
 
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         full_path = _resolve(image_path)
         out_directory = _resolve(".")
         if os.path.exists(full_path):
-            process_image(full_path, out_dir=out_directory, size=512)
+            process_image(full_path, out_dir=out_directory, size=1024)
         else:
             print(f"Error: Could not find image for MOTIF_KEY '{MOTIF_KEY}' (Path: {full_path})")
     else:
