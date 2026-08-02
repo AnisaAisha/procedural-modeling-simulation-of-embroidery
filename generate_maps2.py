@@ -1,5 +1,4 @@
 import os
-import argparse
 import numpy as np
 import cv2
 from PIL import Image
@@ -10,7 +9,7 @@ MOTIFS = {
     "3": "outputs/motif_3_filled.png",
     "4": "outputs/motif-4_filled.png",
 }
-MOTIF_KEY = "4" #change this key for motif needed
+MOTIF_KEY = "2" #change this key for motif needed
 
 def smooth_random_field(n, low_res, rng):
     low_res = max(2, int(low_res))
@@ -88,15 +87,15 @@ def process_image(image_path, out_dir=".", size=512):
     height = (ridge * amplitude).astype(np.float32)
     
     # Normal map from sharp height
-    normal_rgb, _ = generate_normal_map(height, strength=15.0)
+    normal_rgb, _ = generate_normal_map(height, strength=4.5)
     
     # Smooth height for displacement map
     height_disp = cv2.GaussianBlur(height, (0, 0), 2.0)
     height_disp_rgb = np.clip(height_disp * 255.0, 0, 255).astype(np.uint8)
     
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    height_out = os.path.join(out_dir, f"{base_name}_height.png")
-    normal_out = os.path.join(out_dir, f"{base_name}_normal.png")
+    height_out = os.path.join(out_dir, f"outputs/{base_name}_height.png")
+    normal_out = os.path.join(out_dir, f"outputs/{base_name}_normal.png")
     
     Image.fromarray(height_disp_rgb).save(height_out)
     Image.fromarray(normal_rgb).save(normal_out)

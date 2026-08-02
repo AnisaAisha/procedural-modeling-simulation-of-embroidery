@@ -1,7 +1,6 @@
 import taichi as ti
 import taichi.math as tm
 import numpy as np
-from IPython.display import display
 
 ti.init(arch=ti.gpu)
 
@@ -14,23 +13,21 @@ axiom_3 = "[[---b[->>>>AAA----BBBB--AAABB]ab[->>>>AA----BBBB--AAB]ab[->>>>BBBBBB
 rule = {"F" : "[+BBBBB-F[+BBBBB-]A[+BBBB+++++A]A[+BBB+++++A]A[+BB+++++A]A[+B+++++A]]",
         'M': 'A[+BBBB+++++A][-BBBB-----A]A[+BBB+++++A][-BBB-----A]A[+BB+++++A][-BB-----A]A[+B+++++A][-B-----A]',
         'H': 'BH',
-        'K': "[+++[+++BBBBB]+B[++BBBBB++++B]-+B[++BBBB++++B]-+B[++BBB++++B]-+B[++BB++++B]-+B[++B++++B][-+++aaa--b----AAA--b----AAA]]", # Can make this a closed shape by replacing B instead of b in the line part
-        'Q': "[BBBB-----BBBB-BBBB-----BBBB]", # small parallelogram
+        'K': "[+++[+++BBBBB]+B[++BBBBB++++B]-+B[++BBBB++++B]-+B[++BBB++++B]-+B[++BB++++B]-+B[++B++++B][-+++aaa--b----AAA--b----AAA]]", 
+        'Q': "[BBBB-----BBBB-BBBB-----BBBB]", 
         'W': axiom_3 + "---abb---aabb" + "[bb[BBBBB-----<<AAABB->>BBBBB---->>>>AAABB]abbbb-----abbb+++++[BBBBB-----<<AAB->>BBBBB---->>>>AAB]abbb-----bbbbbbb+++++[BBBB-----<<ABB->>BBBB---->>>>ABB]ab-----bbbbb+++++[BBBB-----<<BBBB->>BBBB---->>>>BBBB]]",
         'X': "[[++++++AAAAAAB+++AAAABB]-----<BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB]",
         'Z': "[+++[BBBB-----<<BBBBB->>>BBBB---->>>BBBBB]a[BBBB-----<<ABBBB->>>BBBB---->>>ABBBB]]",
-        'V': "[AAA+++++++++AA+++AAA+++++++++AA+++]", # Right Base (Leans Left)
-        'U': "[AAA---------AA---AAA---------AA---]", # Left Base (Leans Right)
+        'V': "[AAA+++++++++AA+++AAA+++++++++AA+++]", 
+        'U': "[AAA---------AA---AAA---------AA---]", 
         
         # --- New Structural Bricks (For Motif 1) ---
-        'v': "aaaaaaa",     # Vertical gap between rows
-        'c': "aa",          # Half of the center gap
-        # The Halves
-        'P': "[VvVvVvV]---aaaaa+++[VvVvV]---aaaaa+++[VvV]---aaaaa+++[V]", # Full Right Half (4, 3, 2, 1)
-        'C': "[UvUvUvU]+++aaaaa---[UvUvU]+++aaaaa---[UvU]+++aaaaa---[U]"  # Full Left Half (4, 3, 2, 1)
+        'v': "aaaaaaa",     
+        'c': "aa",          
+        'P': "[VvVvVvV]---aaaaa+++[VvVvV]---aaaaa+++[VvV]---aaaaa+++[V]", 
+        'C': "[UvUvUvU]+++aaaaa---[UvUvU]+++aaaaa---[UvU]+++aaaaa---[U]"  
       }
 
-# Function for parsing L-system rules and axioms
 def generate_l_system(axiom, rules, iterations):
   current_string = axiom
   temp = ""
@@ -44,23 +41,18 @@ def generate_l_system(axiom, rules, iterations):
     temp = ""
   return current_string
 
- 
 def mirror(symbol, iterations=3):
-  # Non-recursive case: Expand the symbol, then swap angles from '+-<>' to '-+><'
   mirror_table = str.maketrans('+-<>', '-+><')
   if symbol not in rule[symbol]:
     expanded = generate_l_system(symbol, rule, iterations)
     return expanded.translate(mirror_table)
 
-  # Recursive symbol case: Swap the angles and store the axiom in a temp symbol
-  # Change the original symbol in the axiom to temp symbol for recursive call
   rules_copy = rule.copy()
   temp_symbol = 'x'
   if symbol in rules_copy:
       mirror_angles = rules_copy[symbol].translate(mirror_table)      
       rules_copy[temp_symbol] = mirror_angles.replace(symbol, temp_symbol)
   
-  # Expand and remove temp symbol
   expanded = generate_l_system(temp_symbol, rules_copy, iterations)
   return expanded.replace(temp_symbol, "") 
 
@@ -74,7 +66,6 @@ ITERATIONS = 3
 # axiom = "[aa[------c++++++P][++++++c------C]][++++++aa[------c++++++P][++++++c------C]][++++++++++++aa[------c++++++P][++++++c------C]][------aa[------c++++++P][++++++c------C]]"
 
 # Areeba -- Axioms for Motif 2
-# Added -- at the start to rotate slightly
 # axiom = "--[K++++aab----[------K]]aaa[K++++aab----[------K]]aaa[K++++aab----[------K]]"
 
 # Afeera -- Updated axioms for Motif 3
@@ -85,16 +76,13 @@ axiom = axiom0 + "+++aaaaaaabbbbb+++bbbbb[+++W---aaa---aabb[" + mirror("W", ITER
 # Abbas -- Axiom for Motif 4
 # axiom = "[+BBHBHBHBHBH][-BBHBHBHBHBH]aF" + mirror("F", 2) + "M"
 
-#####
-
 final_str = generate_l_system(axiom, rule, 2)
 
 char_to_token = {'A': 1, 'B' : 2, '+': 3, '-': 4, 'a': 5, 'b': 6, '[': 7, ']': 8, 'F': 9, 'G': 10, 'R': 11, 'L': 12, 'H': 13, 'M': 14, 'T': 15, '>': 16, '<': 17, 'V': 18, 'v': 19, 'U': 20}
 token_list = [char_to_token[i] for i in final_str]
-print(final_str)
 token_array = np.array(token_list, dtype=np.int32)
 
-n = 600 # Image Resolution
+n = 1024 # Image Resolution
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=(n, n))
 tokens = ti.field(dtype=ti.int32, shape=(len(token_array)))
 tokens.from_numpy(token_array)
@@ -102,6 +90,9 @@ tokens.from_numpy(token_array)
 start_x = ti.field(dtype=ti.f32, shape=(len(token_array)))
 start_y = ti.field(dtype=ti.f32, shape=(len(token_array)))
 start_angle = ti.field(dtype=ti.f32, shape=(len(token_array)))
+
+# Field to communicate the auto-scale factor between kernels
+global_scale = ti.field(dtype=ti.f32, shape=()) 
 
 stack_x = ti.field(dtype=ti.f32, shape=(50))
 stack_y = ti.field(dtype=ti.f32, shape=(50))
@@ -127,22 +118,15 @@ def pop():
 def compute_stages(lengthA: float, lengthB: float, angle: float):
   ti.loop_config(serialize=True)
 
-  stack = []
-
-  # For motif 2 & 4
-  # x = 250.0
-  # y = 50.0
-  # alpha = 90.0
-
-  # For motif 1
-  # x = 300.0
-  # y = 300.0
-  # alpha = 0.0
-
-  # For motif 3
+  # Arbitrary starting coordinates (will be centered and scaled anyway)
   x = 250.0
-  y = 400.0
+  y = 250.0
   alpha = 0.0
+
+  min_x = x
+  max_x = x
+  min_y = y
+  max_y = y
 
   for i in range(tokens.shape[0]):
     start_x[i] = x
@@ -151,11 +135,21 @@ def compute_stages(lengthA: float, lengthB: float, angle: float):
 
     t = tokens[i]
     if t == 1 or t == 5:
-      x = x + lengthA * ti.cos(alpha* tm.pi/180.0)
-      y = y + lengthA * ti.sin(alpha* tm.pi/180.0)
+      x_next = x + lengthA * ti.cos(alpha* tm.pi/180.0)
+      y_next = y + lengthA * ti.sin(alpha* tm.pi/180.0)
+      min_x = ti.min(min_x, ti.min(x, x_next))
+      max_x = ti.max(max_x, ti.max(x, x_next))
+      min_y = ti.min(min_y, ti.min(y, y_next))
+      max_y = ti.max(max_y, ti.max(y, y_next))
+      x, y = x_next, y_next
     elif t == 2 or t == 6:
-      x = x + lengthB * ti.cos(alpha* tm.pi/180.0)
-      y = y + lengthB * ti.sin(alpha* tm.pi/180.0)
+      x_next = x + lengthB * ti.cos(alpha* tm.pi/180.0)
+      y_next = y + lengthB * ti.sin(alpha* tm.pi/180.0)
+      min_x = ti.min(min_x, ti.min(x, x_next))
+      max_x = ti.max(max_x, ti.max(x, x_next))
+      min_y = ti.min(min_y, ti.min(y, y_next))
+      max_y = ti.max(max_y, ti.max(y, y_next))
+      x, y = x_next, y_next
     elif t == 3:
       alpha += angle
     elif t == 4:
@@ -168,68 +162,92 @@ def compute_stages(lengthA: float, lengthB: float, angle: float):
       alpha -= 5.0
     elif t == 17:
       alpha += 5.0
-    else:
-      continue
+
+  # Compute Bounding Box, Scale, and Centering Offset
+  center_x = (min_x + max_x) / 2.0
+  center_y = (min_y + max_y) / 2.0
+  width = max_x - min_x
+  height = max_y - min_y
+  max_dim = ti.max(width, height)
+  
+  scale = 1.0
+  if max_dim > 1e-4:
+      scale = (float(n) * 0.9) / max_dim
+      
+  global_scale[None] = scale
+
+  # Shift generated points to origin, scale them, and shift to screen center
+  for i in range(tokens.shape[0]):
+      start_x[i] = (start_x[i] - center_x) * scale + float(n) / 2.0
+      start_y[i] = (start_y[i] - center_y) * scale + float(n) / 2.0
 
 @ti.kernel
 def draw_in_parallel(lengthA: float, lengthB: float):
+  # === SET LINE THICKNESS HERE === (0 = 1 pixel, 1 = 3 pixels, 2 = 5 pixels...)
+  thickness = 2 
+  
+  # Fetch the computed scale to adjust segment lengths
+  scale = global_scale[None]
+  scaled_lenA = lengthA * scale
+  scaled_lenB = lengthB * scale
+
   for i in range(tokens.shape[0]):
-    if tokens[i] == 1:
+    t = tokens[i]
+    # Check for 1 (A), 5 (a), 2 (B), 6 (b)
+    if t == 1 or t == 2:
       x = start_x[i]
       y = start_y[i]
       alpha = start_angle[i]
+      
+      l = scaled_lenA if (t == 1 or t == 5) else scaled_lenB
 
-      x_next = x + lengthA * ti.cos(alpha * tm.pi / 180.0)
-      y_next = y + lengthA * ti.sin(alpha * tm.pi / 180.0)
+      x_next = x + l * ti.cos(alpha * tm.pi / 180.0)
+      y_next = y + l * ti.sin(alpha * tm.pi / 180.0)
 
-      # Draw the line
-      steps = int(lengthA * 2.0)
+      steps = int(l * 2.0)
+      if steps == 0:
+          steps = 1
+          
       for s in range(steps):
         pct = float(s) / float(steps)
         px = int(x + (x_next - x) * pct)
         py = int(y + (y_next - y) * pct)
-        if 0 <= px < n and 0 <= py < n:
-          pixels[px, py] = 0.0  # Draw line in BLACK
-    elif tokens[i] == 2:
-      x = start_x[i]
-      y = start_y[i]
-      alpha = start_angle[i]
-
-      x_next = x + lengthB * ti.cos(alpha * tm.pi / 180.0)
-      y_next = y + lengthB * ti.sin(alpha * tm.pi / 180.0)
-
-      # Draw the line
-      steps = int(lengthB * 2.0)
-      for s in range(steps):
-        pct = float(s) / float(steps)
-        px = int(x + (x_next - x) * pct)
-        py = int(y + (y_next - y) * pct)
-        if 0 <= px < n and 0 <= py < n:
-          pixels[px, py] = [0.0, 0.0, 0.0] # Draw line in BLACK
+        
+        # Apply circular brush thickness
+        for dx in range(-thickness, thickness + 1):
+          for dy in range(-thickness, thickness + 1):
+            if dx * dx + dy * dy <= thickness * thickness:
+              nx = px + dx
+              ny = py + dy
+              if 0 <= nx < n and 0 <= ny < n:
+                pixels[nx, ny] = [0.0, 0.0, 0.0]  # Draw line in BLACK
 
 pixels.fill(1.0)
+
+"""
+  MOTIF CONFIGURATION BLOCK
+"""
 
 # Areeba -- Motif 1
 # side_length_A = 9.0
 # side_length_B = 9.0
 # angle = 15.0
-# compute_stages(side_length_A, side_length_B, angle)
-# draw_in_parallel(side_length_A, side_length_B)
-
-
-# # Afeera -- Motif 3
-side_length_A = 30.0
-side_length_B = 5.0
-angle = 30.0
-compute_stages(side_length_A, side_length_B, angle)
-draw_in_parallel(side_length_A, side_length_B)
-
 
 # Abbas/Areeba -- Motif 2 & 4
 # side_length_A = 30.0
 # side_length_B = 15.0
 # angle = 30.0
-# compute_stages(side_length_A, side_length_B, angle)
-# draw_in_parallel(side_length_A, side_length_B)
 
-ti.tools.imwrite(pixels, 'outputs/motif3.png')
+# # Afeera -- Motif 3 (Active)
+side_length_A = 30.0
+side_length_B = 5.0
+angle = 30.0
+
+compute_stages(side_length_A, side_length_B, angle)
+draw_in_parallel(side_length_A, side_length_B)
+
+# Optional: Add GUI to preview immediately instead of just writing file
+gui = ti.GUI(name="Centered & Scaled Motif", res=(n, n))
+while gui.running:
+    gui.set_image(pixels)
+    gui.show("outputs/motif3.png")

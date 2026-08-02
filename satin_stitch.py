@@ -5,10 +5,13 @@ import cv2
 
 ti.init(arch=ti.gpu)
 
-img_np = ti.tools.imread("outputs/motif_4.png") # change input file to your specific motif
+MOTIF_IMG = "outputs/motif3.png"
+OUTPUT_IMG = "outputs/motif_3_filled.png"
+
+img_np = ti.tools.imread(MOTIF_IMG) # change input file to your specific motif
 
 RES = (img_np.shape[0], img_np.shape[1])
-RED = [1.0, 0.0, 0.0]
+RED = [0.7, 0.0, 0.0]
 
 
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=RES) # To hold image input/output
@@ -24,20 +27,6 @@ gray_img = (img_np[:, :, 0] * 255).astype(np.uint8) # convert image to greyscale
 #labels_np = numpy array storing the labelled motif
 num_labels, labels_np = cv2.connectedComponents(gray_img, connectivity=4)
 region_labels.from_numpy(labels_np.astype(np.int32)) # store the numpy array as a grid of labelled pixels
-
-# @ti.func
-# def intersect_ray_segment(A, B, D, O):
-#     cross1 = tm.cross(D, (B - A))
-#     cross2 = tm.cross((A - O), (B - A))
-
-#     hit = 0
-#     if ti.abs(cross1) > 1e-6:
-#         t = cross2 / cross1
-#         u = tm.cross((A - O), D) / cross1
-
-#         if t > 0.0 and 0.0 <= u < 1.0:
-#             hit = 1
-#     return hit
 
 # STITCH PLACEMENT, no longer uses ray casting
 @ti.kernel
@@ -59,7 +48,8 @@ def render_stitches(angle: float, target_region: ti.i32, thread_thickness: ti.f3
             if p_dist % period < thread_thickness:
                 pixels[i, j] = color  # Red fill
             else:
-                pixels[i, j] = [1.0, 1.0, 1.0]  # White gap (or base fabric color)
+                pixels[i, j] = [0.89, 0.0, 0.0]
+                # pixels[i, j] = [1.0, 1.0, 1.0]  # White gap (or base fabric color)
 
 @ti.kernel
 def change_outline(color: ti.types.vector(3, ti.f32)):
@@ -69,11 +59,11 @@ def change_outline(color: ti.types.vector(3, ti.f32)):
             pixels[i, j] = color
 
 #render stitches for all the regions
-for i in range(1, num_labels):
-    if i != labels_np[0, 0]:
-        render_stitches(90, i, 1.0, 0.3, RED)
+for i in range(1, num_labels): #4, 27
+    if i != labels_np[0, 0] and i != 4 and i != 27:
+        render_stitches(90, i, 1.0, 1.0, RED)
 
-change_outline(RED)
+# change_outline(RED)
 
 print("number of regions:", num_labels)
 
@@ -82,4 +72,5 @@ gui = ti.GUI("motif 4 filled", res=RES, background_color=0xFFFFFF)
 
 while gui.running:
     gui.set_image(pixels)
-    gui.show("motif_4_filled.png") # save the image
+    gui.show(OUTPUT_IMG) # save the image
+    # gui.show()

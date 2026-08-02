@@ -2,8 +2,9 @@ import os
 import taichi as ti
 import numpy as np
 from PIL import Image
+from image_compositing import *
+from generate_motif_map import *
 
-# Initialize Taichi with Vulkan to avoid OpenGL 64-bit int errors
 ti.init(arch=ti.gpu, default_ip=ti.i32)
 
 # =============================================================================
@@ -13,20 +14,20 @@ MOTIFS = {
     "1": "outputs/motif_1_filled.png",
     "2": "outputs/motif_2_filled.png",
     "3": "outputs/motif_3_filled.png",
-    "4": "outputs/motif-4_filled.png",
+    "4": "outputs/motif_4_filled.png",
 }
-MOTIF_KEY = "4"
+MOTIF_KEY = "2"
 INPUT_IMAGE = MOTIFS.get(MOTIF_KEY)
 
 # File Paths for New Maps
-BUMP_MAP_PATH = "outputs/subtracted_bump.png"
-ROUGHNESS_MAP_PATH = "outputs/subtracted_roughness.png"
+BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
+ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
 BUMP_STRENGTH = 0.005
 
 # Map and Grid settings
 K = 1024
-GRID_ROWS = 800
-GRID_COLS = 800
+GRID_ROWS = 500
+GRID_COLS = 500
 CLOTH_WIDTH = 7.0
 CLOTH_HEIGHT = 7.0
 
@@ -45,9 +46,9 @@ dt = 5e-4
 gravity = ti.Vector([0, -0.5, 0])
 drag_damping = 0.1
 
-spring_k_structural = 1.0 / 500.0
-spring_k_shear = 1.0 / 500.0 
-spring_k_bend = 0.1 / 250.0 
+spring_k_structural = 1.0 / 1000000.0
+spring_k_shear = 1.0 / 1000000.0 
+spring_k_bend = 1.0 / 80000.0 
 
 # =============================================================================
 # DATA STRUCTURES
@@ -75,7 +76,8 @@ indices = ti.field(dtype=ti.i32, shape=num_triangles * 3)
 particles = Particle.field(shape=num_vertices)
 springs = Spring.field(shape=num_springs)
 
-height_field = ti.field(dtype=ti.f32, shape=(K, K))
+heightmap = ti.field(dtype=ti.f32, shape=(K, K))
+disp_field = ti.field(dtype=ti.f32, shape=(K, K))
 color_field = ti.Vector.field(3, dtype=ti.f32, shape=(K, K))
 normal_map_field = ti.Vector.field(3, dtype=ti.f32, shape=(K, K))
 bump_field = ti.field(dtype=ti.f32, shape=(K, K))
@@ -225,7 +227,7 @@ def update_mesh(h_scale: ti.f32, detail_strength: ti.f32, bump_strength: ti.f32)
         base_pos = particles[idx].pos
         
         # Displace along the geometry normal
-        disp = height_field[tx, ty] * h_scale
+        disp = disp_field[tx, ty] * h_scale
         vertices[idx] = base_pos + geo_normal * disp
 
     # Pass 2: Calculate accurate dynamic TBN blended normals + Bump Map
@@ -288,12 +290,13 @@ if __name__ == "__main__":
     print("Loading textures...")
     here = os.path.dirname(os.path.abspath(__file__))
     input_path = os.path.join(here, INPUT_IMAGE)
-    height_path = "displacement_map.png"
-    normal_path = os.path.join(here, f"outputs/motif-{MOTIF_KEY}_filled_normal.png")
+    height_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_height.png")
+    disp_path = DISPLACEMENT_MAP_OUT
+    normal_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_normal.png")
     bump_path = os.path.join(here, BUMP_MAP_PATH)
     roughness_path = os.path.join(here, ROUGHNESS_MAP_PATH)
     
-    if not os.path.exists(height_path) or not os.path.exists(normal_path):
+    if not os.path.exists(height_path) or not os.path.exists(normal_path) or not os.path.exists(disp_path):
         print(f"Error: Maps not found for {INPUT_IMAGE}. Please run generate_maps.py first!")
         exit(1)
         
@@ -301,22 +304,59 @@ if __name__ == "__main__":
     img_color = Image.open(input_path).convert("RGB").resize((K, K), Image.BILINEAR)
     color_np = np.asarray(img_color, dtype=np.float32) / 255.0
     color_np = np.flipud(color_np)
+    color_field.from_numpy(np.ascontiguousarray(color_np.astype(np.float32)))
+
+    # DISPLACEMENT MAP GENERATION
+    print("Generating displacement map...")
+
+    # 1. Build the red mask on the GPU
+    build_red_mask(K, RED_GAIN, color_field, heightmap)
+    red_mask_np = heightmap.to_numpy()
+
+    # 2. Process the ridges and fine details on the CPU
+    ridge_np = generate_individual_stitch_ridges(
+        K,
+        red_mask_np,
+        RIDGE_AMPLITUDE,
+        RIDGE_ROUNDNESS,
+        RIDGE_HEIGHT_JITTER,
+        RIDGE_DIST_BLUR,
+        RIDGE_NOISE_AMP,
+        RIDGE_NOISE_SCALE,
+        RIDGE_SEED,
+        RIDGE_MASK_THRESHOLD,
+        RIDGE_LINE_FREQUENCY,
+        RIDGE_LINE_AMP
+    )
+
+    # 3. Combine base mask height with the generated ridges
+    combined_height_np = red_mask_np * RED_BASE_HEIGHT + ridge_np
+
+    # 4. Normalize and save the image
+    disp_vis = combined_height_np - combined_height_np.min()
+    disp_vis = disp_vis / (np.ptp(disp_vis) + 1e-6)
     
-    img_height = Image.open(height_path).convert("L").resize((K, K), Image.BILINEAR)
-    height_np = np.asarray(img_height, dtype=np.float32) / 255.0
-    height_np = np.flipud(height_np)
+    disp_img = Image.fromarray((disp_vis * 255).astype(np.uint8), mode="L")
+    disp_img = disp_img.transpose(Image.FLIP_TOP_BOTTOM)
+    disp_img.save(DISPLACEMENT_MAP_OUT)
+    
+    print(f"Success! Saved displacement map to {DISPLACEMENT_MAP_OUT}")
+    
+    img_disp = Image.open(disp_path).convert("L").resize((K, K), Image.BILINEAR)
+    disp_np = np.asarray(img_disp, dtype=np.float32) / 255.0
+    disp_np = np.flipud(disp_np)
+    disp_field.from_numpy(np.ascontiguousarray(disp_np.astype(np.float32)))
     
     img_normal = Image.open(normal_path).convert("RGB").resize((K, K), Image.BILINEAR)
     normal_np = np.asarray(img_normal, dtype=np.float32) / 255.0
     normal_np = np.flipud(normal_np)
-    
-    color_field.from_numpy(np.ascontiguousarray(color_np.astype(np.float32)))
-    height_field.from_numpy(np.ascontiguousarray(height_np.astype(np.float32)))
     normal_map_field.from_numpy(np.ascontiguousarray(normal_np.astype(np.float32)))
 
     # Bump Map
     if os.path.exists(bump_path):
-        img_bump = Image.open(bump_path).convert("L").resize((K, K), Image.BILINEAR)
+        final_bump_path = "outputs/subtracted_bump.png"
+        subtract(bump_path, height_path, final_bump_path)
+        img_bump = Image.open(final_bump_path).convert("L").resize((K, K), Image.BILINEAR)
         bump_np = np.asarray(img_bump, dtype=np.float32) / 255.0
         bump_np = np.flipud(bump_np)
         bump_field.from_numpy(np.ascontiguousarray(bump_np.astype(np.float32)))
@@ -326,15 +366,15 @@ if __name__ == "__main__":
     # Roughness Map
     mean_roughness = 0.5
     if os.path.exists(roughness_path):
-        img_roughness = Image.open(roughness_path).convert("L").resize((K, K), Image.BILINEAR)
+        final_roughness_path = "outputs/subtracted_roughness.png"
+        subtract(roughness_path, height_path, final_roughness_path)
+        img_roughness = Image.open(final_roughness_path).convert("L").resize((K, K), Image.BILINEAR)
         roughness_np = np.asarray(img_roughness, dtype=np.float32) / 255.0
         roughness_np = np.flipud(roughness_np)
         roughness_field.from_numpy(np.ascontiguousarray(roughness_np.astype(np.float32)))
         mean_roughness = float(np.mean(roughness_np))
     else:
         print(f"Warning: Roughness map not found at {roughness_path}")
-        
-    # REMOVED the ti.ui.Material() block here
 
     print("Initializing Physics...")
     build_initial_state()
@@ -347,12 +387,12 @@ if __name__ == "__main__":
     scene = window.get_scene()
     camera = ti.ui.Camera()
     
-    camera.position(0.0, 8.0, 3.0)
+    camera.position(2.0, 2.0, 6.0)
     camera.lookat(0.0, 1.0, 0.0)
     
     light_angle = 0.0
     while window.running:
-        for _ in range(30):
+        for _ in range(50):
             substep()
             
         update_mesh(HEIGHT_SCALE, 0.85, BUMP_STRENGTH)

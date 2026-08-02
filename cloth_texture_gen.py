@@ -11,14 +11,14 @@ PHASE_JITTER_DEG = 30.0
 
 # Roughness parameters
 
-BASE_ROUGHNESS = 0.05      # The overall shininess of the thread material | 0.5 for khaddar, 0.05 for cotton
-CREVICE_ROUGHNESS = 0.1    # The roughness deep in the gaps between threads | 0.2 for khaddar, 0.1 for cotton
+BASE_ROUGHNESS = 0.5      # The overall shininess of the thread material | 0.5 for khaddar, 0.05 for cotton
+CREVICE_ROUGHNESS = 0.2    # The roughness deep in the gaps between threads | 0.2 for khaddar, 0.1 for cotton
 SLOPE_SCATTER = 0.1        # 0.1 for khaddar, same for cotton
 
 # Output file paths
 BUMP_MAP = "outputs/smooth_weave_bump_map.png"
-# ROUGHNESS_MAP = "outputs/weave_roughness_map.png"
-ROUGHNESS_MAP = "motif_roughness.png"
+ROUGHNESS_MAP = "outputs/weave_roughness_map.png"
+# ROUGHNESS_MAP = "motif_roughness.png"
 
 def smooth_random_field(n, low_res, rng):
     low_res = max(2, int(low_res))
@@ -108,4 +108,4 @@ def generate_roughness_map(input_file_path):
     cv.imwrite(ROUGHNESS_MAP, roughness_uint8)
 
 generate_bump_map(RESOLUTION)
-generate_roughness_map('displacement_map.png')
+generate_roughness_map(BUMP_MAP)
