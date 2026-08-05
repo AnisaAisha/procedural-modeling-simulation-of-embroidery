@@ -11,8 +11,8 @@ CAM_POS = tm.vec3(0.0, 1.0, -3.0)
 width, height = 800, 800
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width, height))
 
-ROUGHNESS_PATH = "weave_roughness_map.png"
-GRADIENT_PATH = "weave_bump_map.png"  # made by build_map.py
+ROUGHNESS_PATH = "images\weave_roughness_map.png"
+GRADIENT_PATH = "images\weave_bump_map.png"  # made by build_map.py
 
 rough_img = Image.open(ROUGHNESS_PATH).convert("L")  
 rough_np = np.asarray(rough_img, dtype=np.float32) / 255.0
