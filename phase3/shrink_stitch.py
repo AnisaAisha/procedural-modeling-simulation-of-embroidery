@@ -14,12 +14,15 @@ SPACING = SQUARE_SIZE / NUM_STITCHES    # 0.25 units between arcs
 HALF_N = NUM_STITCHES / 2.0
 DRAW_SPEED = 0.8                        # how fast one arc crosses the square
 
+LOW_ARCH = 0.4                          # settled height every stitch shrinks down to
+HIGH_ARCH_MAX = 0.75 * SQUARE_SIZE      # peak height of the very first stitch (7.5)
+
 @ti.func
 def sdPlane(p, n, h):
     return tm.dot(p, n) + h
 
 @ti.func
-def sdCustomCurve(p, t, start_pt, end_pt, delay):
+def sdCustomCurve(p, t, start_pt, end_pt, delay, high_arch):
     a = start_pt
     b = end_pt
     thickness = THICKNESS
@@ -30,27 +33,36 @@ def sdCustomCurve(p, t, start_pt, end_pt, delay):
     # Dot product projection
     raw_h = tm.dot(pa, ba) / tm.dot(ba, ba)
 
-    # No modulo. Progress rises 0 to 1, then clamp holds it at 1 forever.
+    # 1. Drawing Phase (same as sqtest2.py)
     draw_progress = t * DRAW_SPEED - delay
     max_h = tm.clamp(draw_progress, 0.0, 1.0)
     h = tm.clamp(raw_h, 0.0, max_h)
 
-    # Arch bending logic
-    parabola = 4.0 * h * (1.0 - h)
-    arch_height = 0.4
+    # 2. Shrinking Phase
+    # Starts going from 0.0 to 1.0 ONLY AFTER draw_progress exceeds 1.0
+    shrink_progress = tm.clamp(draw_progress - 1.0, 0.0, 1.0)
 
-    p_bent = p
-    p_bent.y -= parabola * arch_height
+    # 3. Dynamic Height Calculation
+    # high_arch is this stitch's own peak (passed in, tapers stitch to stitch)
+    # Interpolate from high_arch down to LOW_ARCH
+    current_height = high_arch - (high_arch - LOW_ARCH) * shrink_progress
 
-    pa_bent = p_bent - a
-    exact_dist = tm.length(pa_bent - ba * h) - thickness
-
-    result = exact_dist * 0.6
-
-    # Hide a stitch that has not started yet, otherwise it shows
-    # as a blob sitting at the left edge
+    result = 1e5
     if draw_progress <= 0.0:
+        # Stitch hasn't started yet - hide it instead of leaving a stray
+        # thickness-sized blob sitting at start_pt.
         result = 1e5
+    else:
+        # Arch bending logic
+        parabola = 4.0 * h * (1.0 - h)
+
+        p_bent = p
+        p_bent.y -= parabola * current_height
+
+        pa_bent = p_bent - a
+        exact_dist = tm.length(pa_bent - ba * h) - thickness
+
+        result = exact_dist * 0.6
 
     return result
 
@@ -64,23 +76,34 @@ def sdf(p, t):
     square_min_x = -SQUARE_SIZE / 2.0
     square_max_x = SQUARE_SIZE / 2.0
 
-    # 2. Which stitch is this point nearest to?
-    idx = ti.floor(p.z / SPACING + 0.5)
-    idx = tm.clamp(idx, -HALF_N, HALF_N)   # clamp keeps stitches inside the square
+    # 2. Check the nearest stitch and its neighbors to avoid SDF overshooting
+    base_idx = ti.floor(p.z / SPACING + 0.5)
+    
+    curve_dist = 1e5
+    for offset in ti.static(range(-2, 3)):
+        idx = base_idx + offset
+        idx = tm.clamp(idx, -HALF_N, HALF_N)   # clamp keeps stitches inside the square
 
-    # 3. Shift the point into that stitch's own local space,
-    #    where the arc always sits at z = 0
-    p_local = p
-    p_local.z = p.z - idx * SPACING
+        # 3. Shift the point into that stitch's own local space
+        p_local = p
+        p_local.z = p.z - idx * SPACING
 
-    # One arc definition, reused by every stitch
-    start_pt = tm.vec3(square_min_x, 0.0, 0.0)
-    end_pt = tm.vec3(square_max_x, 0.0, 0.0)
+        # 4. Define Start and End Points
+        start_pt = tm.vec3(square_min_x, -0.15, 0.0)
+        end_pt = tm.vec3(square_max_x, -0.15, 0.0)
 
-    # Stitch 0 runs during progress 0 to 1, stitch 1 during 1 to 2, and so on.
-    order = idx + HALF_N
-    delay = order * 1.0
-    curve_dist = sdCustomCurve(p_local, t, start_pt, end_pt, delay)
+        # Each stitch draws (progress 0->1) then shrinks (progress 1->2) before
+        # the next one begins, so delay by a full 2.0 per stitch (fully sequential).
+        order = idx + HALF_N
+        delay = order * 2.0
+
+        # Peak height decays linearly from HIGH_ARCH_MAX (stitch 0) down to
+        # LOW_ARCH (last stitch), then clamps so it never dips below LOW_ARCH.
+        remaining_fraction = 1.0 - order / NUM_STITCHES
+        high_arch = tm.max(HIGH_ARCH_MAX * remaining_fraction, LOW_ARCH)
+
+        d = sdCustomCurve(p_local, t, start_pt, end_pt, delay, high_arch)
+        curve_dist = ti.min(curve_dist, d)
 
     dist = ti.min(dist, curve_dist)
     return dist
@@ -91,7 +114,11 @@ def rayMarching(origin, dir, steps: ti.i32, t: ti.f32):
     for i in range(steps):
         p = origin + s * dir
         d = sdf(p, t)
-        s += d
+        # Cap the step: the growing-tip kink (from clamping h to max_h while a
+        # stitch is drawing) can make the SDF overstate distance when arcs are
+        # tall, letting the ray skip straight through the thin thread. Capping
+        # keeps steps small enough to still catch it.
+        s += tm.min(d, 0.15)
 
         if d < 0.001:      # compare the step, not the total distance
             break
@@ -128,7 +155,7 @@ def render(t: ti.f32):
         origin = CAM_POS
         dir = tm.normalize(tm.vec3(uv.x, uv.y - 1.0, 1.0))
 
-        s = rayMarching(origin, dir, 100, t)
+        s = rayMarching(origin, dir, 400, t)
 
         color = tm.vec3(0.1, 0.1, 0.1)
         if s < 50.0:
@@ -161,7 +188,7 @@ def render(t: ti.f32):
 
         pixels[i, j] = color
 
-gui = ti.GUI("Ray Marching - 10x10 Square Thread Fill", res = (width, height))
+gui = ti.GUI("Ray Marching - Growing and Shrinking Stitch", res = (width, height))
 i = 0
 while gui.running:
     render(i * 0.03)
