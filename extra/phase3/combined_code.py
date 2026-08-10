@@ -7,26 +7,35 @@ from PIL import Image
 
 ti.init(arch=ti.vulkan, default_ip=ti.i32)
 
+# CAM_POS: (x, y, z) -- y is height above the plane, z is how far back
+# the camera sits (the ray direction below points toward +z, so more
+# negative z = further away). Moved further back and lower than before.
 CAM_POS = tm.vec3(0.0, 15.0, -15.0)
 width = height = 600
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width, height))
 
 SQUARE_SIZE = 10.0
-THICKNESS = 0.10                        # thicker so neighbouring arcs almost touch
-NUM_STITCHES = 40
+THICKNESS = 0.05                        # radius of ONE strand; the twisted pair reads as the thread
+NUM_STITCHES = 60
 SPACING = SQUARE_SIZE / NUM_STITCHES    # 0.25 units between arcs
 HALF_N = NUM_STITCHES / 2.0
-DRAW_SPEED = 0.8                        # how fast one arc crosses the square
+DRAW_SPEED = 0.9                        # how fast one arc crosses the square
 
 LOW_ARCH = 0.4                          # settled height every stitch shrinks down to
 HIGH_ARCH_MAX = 0.75 * SQUARE_SIZE      # peak height of the very first stitch (7.5)
 
 STITCH_DEPTH = 0.15                     # how far below the fabric plane the exit point sinks
 
+PULL_DELAY = 0.85     # 0..1, how long the entry end (h=0) waits before it starts collapsing
+
 # at O(1) extra cost per SDF call instead of an O(N) resample+smin loop.
 WOBBLE_AMP = 0.45     # z-offset amplitude while the stitch is still loose
 WOBBLE_FREQ = 12.0     # spatial wobble frequency along the stitch (in h)
 WOBBLE_SPEED = 3.0    # temporal wobble speed
+
+TWIST_STRANDS = 2       # strands twisted together to read as one thread
+TWIST_AMPLITUDE = 0.025 # how far each strand sits off the curve centreline
+TWIST_FREQUENCY = 10.0  # twist rate along the stitch (in world x)
 
 
 RISE_POWER = 1.0
@@ -35,7 +44,7 @@ _H_PEAK = RISE_POWER / (RISE_POWER + DIVE_POWER)
 ARCH_NORM = 1.0 / ((_H_PEAK ** RISE_POWER) * ((1.0 - _H_PEAK) ** DIVE_POWER))
 
 ROUGHNESS_PATH = "images/weave_roughness_map.png"
-GRADIENT_PATH = "images/weave_bump_map.png"  # made by build_map.py
+GRADIENT_PATH = "images/weave_bump_map.png"  
 
 rough_img = Image.open(ROUGHNESS_PATH).convert("L")
 rough_np = np.asarray(rough_img, dtype=np.float32) / 255.0
@@ -55,10 +64,20 @@ gx_np, gz_np = load_gradient_map(GRADIENT_PATH, rough_np.shape)
 gradient_tex = ti.Vector.field(2, dtype=ti.f32, shape=(tex_w, tex_h))
 gradient_tex.from_numpy(np.ascontiguousarray(np.stack([gx_np.T, gz_np.T], axis=-1)))
 
-TEX_SCALE = 0.1          # smaller = bigger tiles, larger = more repeats
-BUMP_STRENGTH = 0.3      # how strongly the weave perturbs the normal (gradient is pre-normalized to [-1,1])
-AO_STRENGTH = 0.1        # how much rough valleys darken ambient light
+TEX_SCALE = 0.05          # smaller = bigger tiles, larger = more repeats
+BUMP_STRENGTH = 0.35      # how strongly the weave perturbs the normal (gradient is pre-normalized to [-1,1])
+AO_STRENGTH = 0.14        # how much rough valleys darken ambient light
 ANISO_STRENGTH = 0.35    # blend amount of the thread-direction sheen
+
+
+FADE_START = 20.0
+FADE_END = 30.0
+
+@ti.func
+def detail_fade(p):
+    dist = tm.length(p - CAM_POS)
+    x = tm.clamp((dist - FADE_START) / (FADE_END - FADE_START), 0.0, 1.0)
+    return 1.0 - x * x * (3.0 - 2.0 * x)   # 1.0 near camera, smoothly -> 0.0 far away
 
 @ti.func
 def sample_roughness(uv):
@@ -110,11 +129,12 @@ def sample_gradient(uv):
 def perturbed_normal(p, n):
     uv = tm.vec2(p.x, p.z) * TEX_SCALE
     g = sample_gradient(uv)  # (dhdx, dhdz), precomputed + pre-smoothed offline
+    fade = detail_fade(p)
 
     tangent = tm.vec3(1.0, 0.0, 0.0)
     bitangent = tm.vec3(0.0, 0.0, 1.0)
 
-    bumped = n - BUMP_STRENGTH * g.x * tangent - BUMP_STRENGTH * g.y * bitangent
+    bumped = n - BUMP_STRENGTH * fade * g.x * tangent - BUMP_STRENGTH * fade * g.y * bitangent
     return tm.normalize(bumped)
 
 @ti.func
@@ -122,30 +142,42 @@ def sdPlane(p, n, h):
     return tm.dot(p, n) + h
 
 @ti.func
+def pull_collapse(h, shrink_progress):
+    # How far this point along the stitch has collapsed, 0 (loose) -> 1 (settled).
+    # The collapse front starts at the end point (h=1, zero delay) and travels back
+    # to the entry point (h=0, waits PULL_DELAY), so the thread looks pulled taut
+    # from its end. The delay is divided out again so every h still reaches exactly
+    # 1.0 when shrink_progress does - the settled arc stays uniform.
+    front_delay = (1.0 - h) * PULL_DELAY
+    raw = tm.clamp((shrink_progress - front_delay) / (1.0 - front_delay), 0.0, 1.0)
+    return raw * raw * (3.0 - 2.0 * raw)   # smoothstep easing
+
+# twist inspired from https://www.shadertoy.com/view/4sfXDs
+@ti.func
 def sdCustomCurve(p, t, start_pt, end_pt, delay, high_arch, phase):
     a = start_pt
     b = end_pt
     thickness = THICKNESS
 
-    pa = p - a
     ba = b - a
-
-    # Dot product projection
-    raw_h = tm.dot(pa, ba) / tm.dot(ba, ba)
 
     # 1. Drawing Phase (same as sqtest2.py)
     draw_progress = t * DRAW_SPEED - delay
     max_h = tm.clamp(draw_progress, 0.0, 1.0)
-    h = tm.clamp(raw_h, 0.0, max_h)
 
     # 2. Shrinking Phase
     # Starts going from 0.0 to 1.0 ONLY AFTER draw_progress exceeds 1.0
     shrink_progress = tm.clamp(draw_progress - 1.0, 0.0, 1.0)
 
-    # 3. Dynamic Height Calculation
-    # high_arch is this stitch's own peak (passed in, tapers stitch to stitch)
-    # Interpolate from high_arch down to LOW_ARCH
-    current_height = high_arch - (high_arch - LOW_ARCH) * shrink_progress
+    # Wobble is computed ONCE from the untwisted point, then shared by every
+    # strand, so the twisted pair sways as one loose thread rather than each
+    # strand wriggling on its own.
+    raw_h_shared = tm.dot(p - a, ba) / tm.dot(ba, ba)
+    h_shared = tm.clamp(raw_h_shared, 0.0, max_h)
+    wobble_weight = 1.0 - pull_collapse(h_shared, shrink_progress)
+    wobble = (WOBBLE_AMP * wobble_weight
+              * tm.sin(3.14159265 * h_shared)
+              * tm.sin(WOBBLE_FREQ * h_shared + t * WOBBLE_SPEED + phase))
 
     result = 1e5
     if draw_progress <= 0.0:
@@ -153,23 +185,41 @@ def sdCustomCurve(p, t, start_pt, end_pt, delay, high_arch, phase):
         # thickness-sized blob sitting at start_pt.
         result = 1e5
     else:
-        arch_shape = ARCH_NORM * tm.pow(h, RISE_POWER) * tm.pow(1.0 - h, DIVE_POWER)
+        # Each strand is the same curve evaluated on a point spiralled off the
+        # centreline: twist -> bend -> wobble, so the twisted form IS the curve
+        # everything downstream acts on.
+        for s in ti.static(range(TWIST_STRANDS)):
+            strand_phase = (s / TWIST_STRANDS) * 6.28318530  # 2*pi spread across strands
+            angle = p.x * TWIST_FREQUENCY + strand_phase
 
-        entry_lift = STITCH_DEPTH * (1.0 - h)
+            # offset the strand across YZ axis (perpendicular plane)
+            p_twisted = p
+            p_twisted.y += tm.sin(angle) * TWIST_AMPLITUDE
+            p_twisted.z += tm.cos(angle) * TWIST_AMPLITUDE
 
-        p_bent = p
-        p_bent.y -= arch_shape * current_height + entry_lift
+            # Dot product projection
+            raw_h = tm.dot(p_twisted - a, ba) / tm.dot(ba, ba)
+            h = tm.clamp(raw_h, 0.0, max_h)
 
-        wobble_weight = 1.0 - shrink_progress
-        wobble = (WOBBLE_AMP * wobble_weight
-                  * tm.sin(3.14159265 * h)
-                  * tm.sin(WOBBLE_FREQ * h + t * WOBBLE_SPEED + phase))
-        p_bent.z += wobble
+            # 3. Dynamic Height Calculation
+            # high_arch is this stitch's own peak (passed in, tapers stitch to
+            # stitch); it eases down to LOW_ARCH as the collapse front passes.
+            local_shrink = pull_collapse(h, shrink_progress)
+            current_height = high_arch - (high_arch - LOW_ARCH) * local_shrink
 
-        pa_bent = p_bent - a
-        exact_dist = tm.length(pa_bent - ba * h) - thickness
+            arch_shape = ARCH_NORM * tm.pow(h, RISE_POWER) * tm.pow(1.0 - h, DIVE_POWER)
 
-        result = exact_dist * 0.6
+            entry_lift = STITCH_DEPTH * (1.0 - h)
+
+            p_bent = p_twisted
+            p_bent.y -= arch_shape * current_height + entry_lift
+
+            p_bent.z += wobble
+
+            pa_bent = p_bent - a
+            exact_dist = tm.length(pa_bent - ba * h) - thickness
+
+            result = ti.min(result, exact_dist * 0.6)
 
     return result
 
@@ -247,7 +297,8 @@ def plane_phong_shading(p, n_geom, t):
     l = tm.normalize(lightPos - p)
 
     uv = tm.vec2(p.x, p.z) * TEX_SCALE
-    rough = sample_roughness(uv)
+    fade = detail_fade(p)
+    rough = sample_roughness(uv) * fade   # fade roughness variation to flat/smooth at distance too
 
     n = perturbed_normal(p, n_geom)
 
