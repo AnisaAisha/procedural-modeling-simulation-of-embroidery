@@ -15,29 +15,39 @@ MOTIFS = {
     "2": "outputs/motif_2_filled.png",
     "3": "outputs/motif_3_filled.png",
     "4": "outputs/motif_4_filled.png",
+    "5": "outputs/chadar.png"
 }
-MOTIF_KEY = "4"
+MOTIF_KEY = "5"
 INPUT_IMAGE = MOTIFS.get(MOTIF_KEY)
 
-# File Paths for New Maps
-BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
-ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
-BUMP_STRENGTH = 0.005
+here = os.path.dirname(os.path.abspath(__file__))
+input_path = os.path.join(here, INPUT_IMAGE)
 
-# Map and Grid settings
-K = 1024
-SIM_ROWS = 60
-SIM_COLS = 60
+# Extract original image dimensions dynamically
+with Image.open(input_path) as tmp:
+    IMG_W, IMG_H = tmp.size
+    print(f"Detected Native Resolution: {IMG_W}x{IMG_H}")
 
-RENDER_ROWS = 600
+# Dynamic Map and Grid settings
+TEX_W = IMG_W
+TEX_H = IMG_H
+
 RENDER_COLS = 600
+RENDER_ROWS = 960
+
+# RENDER_COLS = 600
+# RENDER_ROWS = 600
+
+# Scale down physics grid to maintain real-time performance (roughly 1/10th resolution)
+SIM_COLS = max(2, IMG_W // 10)
+SIM_ROWS = max(2, IMG_H // 10)
 
 CLOTH_WIDTH = 7.0
 CLOTH_HEIGHT = 7.0
 
-# TOTAL_SIZE = (grid_cols - 1) * 0.25
-sim_spacing = CLOTH_HEIGHT/ (SIM_COLS-1)
-HEIGHT_SCALE = 0.06
+# spacing scales dynamically based on the physics grid rows
+sim_spacing = CLOTH_HEIGHT / (SIM_ROWS - 1)
+HEIGHT_SCALE = 0.04
 
 num_vertices = RENDER_ROWS * RENDER_COLS
 num_triangles = (RENDER_ROWS - 1) * (RENDER_COLS - 1) * 2
@@ -55,9 +65,11 @@ spring_k_structural = 1.0 / 25000.0
 spring_k_shear = 1.0 / 25000.0 
 spring_k_bend = 1.0 / 25000.0 
 
-# spring_k_structural = 1.0 / 500.0
-# spring_k_shear = 1.0 / 500.0 
-# spring_k_bend = 0.1 / 250.0 
+# File Paths for New Maps
+BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
+ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
+BUMP_STRENGTH = 0.01
+
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
@@ -85,12 +97,13 @@ indices = ti.field(dtype=ti.i32, shape=num_triangles * 3)
 particles = Particle.field(shape=num_particles)
 springs = Spring.field(shape=num_springs)
 
-heightmap = ti.field(dtype=ti.f32, shape=(K, K))
-disp_field = ti.field(dtype=ti.f32, shape=(K, K))
-color_field = ti.Vector.field(3, dtype=ti.f32, shape=(K, K))
-normal_map_field = ti.Vector.field(3, dtype=ti.f32, shape=(K, K))
-bump_field = ti.field(dtype=ti.f32, shape=(K, K))
-roughness_field = ti.field(dtype=ti.f32, shape=(K, K))
+# Texture Fields dynamically match input image resolution
+heightmap = ti.field(dtype=ti.f32, shape=(TEX_W, TEX_H))
+disp_field = ti.field(dtype=ti.f32, shape=(TEX_W, TEX_H))
+color_field = ti.Vector.field(3, dtype=ti.f32, shape=(TEX_W, TEX_H))
+normal_map_field = ti.Vector.field(3, dtype=ti.f32, shape=(TEX_W, TEX_H))
+bump_field = ti.field(dtype=ti.f32, shape=(TEX_W, TEX_H))
+roughness_field = ti.field(dtype=ti.f32, shape=(TEX_W, TEX_H))
 
 # =============================================================================
 # PHYSICS INITIALIZATION
@@ -109,9 +122,7 @@ def build_initial_state():
         particles[j].is_fixed = 1
 
 def init_springs_state():
-    # Pre-calculate positions on CPU to avoid allocating giant dynamic arrays in python
     s_list = []
-    
     for i in range(SIM_ROWS):
         for j in range(SIM_COLS):
             idx = i * SIM_COLS + j
@@ -145,7 +156,6 @@ def init_springs_state():
                 b2_pos = np.array([x, 2.0, (i + 2) * sim_spacing])
                 s_list.append((idx, bottom2, np.linalg.norm(pos - b2_pos), spring_k_bend))
     
-    # Upload to Taichi
     s_np = np.zeros(num_springs, dtype=[('a', np.int32), ('b', np.int32), ('rest_length', np.float32), ('inv_stiffness', np.float32)])
     for i, s in enumerate(s_list):
         s_np[i] = s
@@ -211,7 +221,6 @@ def update_sim_normals():
     for i, j in ti.ndrange(SIM_ROWS, SIM_COLS):
         idx = i * SIM_COLS + j
         
-        # Get neighboring physics particles
         i0, i1 = ti.max(i - 1, 0), ti.min(i + 1, SIM_ROWS - 1)
         j0, j1 = ti.max(j - 1, 0), ti.min(j + 1, SIM_COLS - 1)
         
@@ -220,27 +229,31 @@ def update_sim_normals():
         vD = particles[i0 * SIM_COLS + j].pos
         vU = particles[i1 * SIM_COLS + j].pos
         
-        # Calculate and store the smooth normal
         sim_normals[idx] = (vU - vD).cross(vR - vL).normalized()
 
+        
 @ti.kernel
 def update_mesh(h_scale: ti.f32, detail_strength: ti.f32, bump_strength: ti.f32):
-    # ONE PASS: Handle Interpolation, Displacement, and Normal Mapping together
     for i, j in ti.ndrange(RENDER_ROWS, RENDER_COLS):
         idx = i * RENDER_COLS + j
         
+        # 1. Base UVs for physical interpolation (DO NOT FLIP)
         u = j / (RENDER_COLS - 1)
         v = i / (RENDER_ROWS - 1)
         
-        tx = ti.cast(u * (K - 1), ti.i32)
-        ty = ti.cast(v * (K - 1), ti.i32)
+        # 2. Texture UVs for reading images (FLIPPED 180 DEGREES)
+        u_tex = 1.0 - u
+        v_tex = 1.0 - v
         
-        # --- 1. Texture & Ambient Occlusion ---
+        # Maps dynamically to the TEX_W and TEX_H using Flipped UVs
+        tx = ti.cast(u_tex * (TEX_W - 1), ti.i32)
+        ty = ti.cast(v_tex * (TEX_H - 1), ti.i32)
+        
         roughness = roughness_field[tx, ty]
         ao = 1.0 - (roughness * 0.4)
         colors[idx] = color_field[tx, ty] * ao
         
-        # --- 2. Smooth Grid Interpolation ---
+        # 3. Interpolate Physics using Base UVs (so the cloth doesn't twist)
         sim_j = u * (SIM_COLS - 1)
         sim_i = v * (SIM_ROWS - 1)
         
@@ -257,53 +270,44 @@ def update_mesh(h_scale: ti.f32, detail_strength: ti.f32, bump_strength: ti.f32)
         idx01 = i1 * SIM_COLS + j0
         idx11 = i1 * SIM_COLS + j1
         
-        # Fetch Physics Particles
         p00 = particles[idx00].pos
         p10 = particles[idx10].pos
         p01 = particles[idx01].pos
         p11 = particles[idx11].pos
         
-        # Fetch Smooth Physics Normals (calculated in update_sim_normals)
         n00 = sim_normals[idx00]
         n10 = sim_normals[idx10]
         n01 = sim_normals[idx01]
         n11 = sim_normals[idx11]
         
-        # Interpolate Base Position smoothly
         top_pos = p00 * (1.0 - wx) + p10 * wx
         bot_pos = p01 * (1.0 - wx) + p11 * wx
         base_pos = top_pos * (1.0 - wy) + bot_pos * wy
         
-        # Interpolate Geometry Normal smoothly
         top_norm = n00 * (1.0 - wx) + n10 * wx
         bot_norm = n01 * (1.0 - wx) + n11 * wx
         geo = (top_norm * (1.0 - wy) + bot_norm * wy).normalized()
         
-        # --- 3. Displacement ---
-        # Push the vertex out along the smooth normal
         disp = disp_field[tx, ty] * h_scale
         vertices[idx] = base_pos + geo * disp
         
-        # --- 4. Smooth Tangent Space (TBN) ---
-        # Derive smooth tangents from the interpolated grid flow, NOT neighboring vertices
         raw_tangent = (p10 - p00) * (1.0 - wy) + (p11 - p01) * wy
-        
-        # Gram-Schmidt Orthogonalization (forces the tangent to be perfectly 90 degrees to the normal)
         tangent = (raw_tangent - geo * raw_tangent.dot(geo)).normalized()
         bitangent = geo.cross(tangent).normalized()
         
-        # --- 5. Normal & Bump Mapping ---
-        nx = normal_map_field[tx, ty][0] * 2.0 - 1.0
-        ny = normal_map_field[tx, ty][1] * 2.0 - 1.0
+        # 4. Invert the X and Y normals to match the 180-degree texture rotation
+        nx = -(normal_map_field[tx, ty][0] * 2.0 - 1.0)
+        ny = -(normal_map_field[tx, ty][1] * 2.0 - 1.0)
         nz = normal_map_field[tx, ty][2] * 2.0 - 1.0
         
-        tx_right = ti.min(tx + 1, K - 1)
+        tx_right = ti.min(tx + 1, TEX_W - 1)
         tx_left = ti.max(tx - 1, 0)
-        ty_up = ti.min(ty + 1, K - 1)
+        ty_up = ti.min(ty + 1, TEX_H - 1)
         ty_down = ti.max(ty - 1, 0)
         
-        slope_x = (bump_field[tx_right, ty] - bump_field[tx_left, ty]) * bump_strength
-        slope_z = (bump_field[tx, ty_up] - bump_field[tx, ty_down]) * bump_strength
+        # 5. Invert the bump map slopes to match the 180-degree texture rotation
+        slope_x = -(bump_field[tx_right, ty] - bump_field[tx_left, ty]) * bump_strength
+        slope_z = -(bump_field[tx, ty_up] - bump_field[tx, ty_down]) * bump_strength
         
         nx -= slope_x
         nz -= slope_z
@@ -314,43 +318,67 @@ def update_mesh(h_scale: ti.f32, detail_strength: ti.f32, bump_strength: ti.f32)
             ny /= len_n
             nz /= len_n
             
-        # Map micro-details to dynamic world space using the smooth TBN matrix
         detail_world = (nx * tangent) + (nz * bitangent) + (ny * geo)
-        normals[idx] = (geo + detail_strength * (detail_world - geo)).normalized()
+        normals[idx] = (geo + detail_strength * (detail_world - geo)).normalized() 
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+def load_texture_to_field(path, field, mode="RGB"):
+    """Loads an image without resizing, swaps axes for Taichi compatibility, and writes to field."""
+    img = Image.open(path).convert(mode)
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = np.flipud(arr)
+    arr = np.swapaxes(arr, 0, 1) # Prevents dimension mismatch crashing 
+    field.from_numpy(np.ascontiguousarray(arr))
 
 # =============================================================================
 # MAIN ORCHESTRATOR
 # =============================================================================
 if __name__ == "__main__":
     print("Loading textures...")
-    here = os.path.dirname(os.path.abspath(__file__))
-    input_path = os.path.join(here, INPUT_IMAGE)
-    height_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_height.png")
+    height_path = "outputs/chadar_height.png"
     disp_path = DISPLACEMENT_MAP_OUT
-    normal_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_normal.png")
+    normal_path = "outputs/chadar_normal.png"
+    # height_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_height.png")
+    # disp_path = DISPLACEMENT_MAP_OUT
+    # normal_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_normal.png")
     bump_path = os.path.join(here, BUMP_MAP_PATH)
     roughness_path = os.path.join(here, ROUGHNESS_MAP_PATH)
     
-    if not os.path.exists(height_path) or not os.path.exists(normal_path) or not os.path.exists(disp_path):
+    if not os.path.exists(height_path) or not os.path.exists(normal_path):
         print(f"Error: Maps not found for {INPUT_IMAGE}. Please run generate_maps.py first!")
         exit(1)
         
-    # Standard Maps
-    img_color = Image.open(input_path).convert("RGB").resize((K, K), Image.BILINEAR)
-    color_np = np.asarray(img_color, dtype=np.float32) / 255.0
-    color_np = np.flipud(color_np)
-    color_field.from_numpy(np.ascontiguousarray(color_np.astype(np.float32)))
+    # Standard Maps - Uses new Helper Function
+    load_texture_to_field(input_path, color_field, mode="RGB")
+    load_texture_to_field(normal_path, normal_map_field, mode="RGB")
 
     # DISPLACEMENT MAP GENERATION
     print("Generating displacement map...")
 
-    # 1. Build the red mask on the GPU
-    build_red_mask(K, RED_GAIN, color_field, heightmap)
-    red_mask_np = heightmap.to_numpy()
+    # Sample the background color from the bottom-left corner (0,0 in Taichi space)
+    color_np = color_field.to_numpy()
+    bg_color = color_np[0, 0] 
+    bg_r, bg_g, bg_b = float(bg_color[0]), float(bg_color[1]), float(bg_color[2])
+    print(f"Detected Background Color: RGB({bg_r:.2f}, {bg_g:.2f}, {bg_b:.2f})")
+
+    # 1. Build the foreground mask on the GPU (ignoring the background)
+    build_foreground_mask(
+        TEX_W, TEX_H, 
+        bg_r, bg_g, bg_b, 
+        BG_TOLERANCE, COLOR_GAIN, 
+        color_field, heightmap
+    )
+    
+    red_mask_np = np.swapaxes(heightmap.to_numpy(), 0, 1) 
+
+    # 2. Process the ridges and fine details on the CPU
+    # ... (Keep the generate_individual_stitch_ridges block exactly the same) ...
 
     # 2. Process the ridges and fine details on the CPU
     ridge_np = generate_individual_stitch_ridges(
-        K,
+        TEX_W, TEX_H, 
         red_mask_np,
         RIDGE_AMPLITUDE,
         RIDGE_ROUNDNESS,
@@ -364,10 +392,8 @@ if __name__ == "__main__":
         RIDGE_LINE_AMP
     )
 
-    # 3. Combine base mask height with the generated ridges
     combined_height_np = red_mask_np * RED_BASE_HEIGHT + ridge_np
 
-    # 4. Normalize and save the image
     disp_vis = combined_height_np - combined_height_np.min()
     disp_vis = disp_vis / (np.ptp(disp_vis) + 1e-6)
     
@@ -376,38 +402,22 @@ if __name__ == "__main__":
     disp_img.save(DISPLACEMENT_MAP_OUT)
     
     print(f"Success! Saved displacement map to {DISPLACEMENT_MAP_OUT}")
-    
-    img_disp = Image.open(disp_path).convert("L").resize((K, K), Image.BILINEAR)
-    disp_np = np.asarray(img_disp, dtype=np.float32) / 255.0
-    disp_np = np.flipud(disp_np)
-    disp_field.from_numpy(np.ascontiguousarray(disp_np.astype(np.float32)))
-    
-    img_normal = Image.open(normal_path).convert("RGB").resize((K, K), Image.BILINEAR)
-    normal_np = np.asarray(img_normal, dtype=np.float32) / 255.0
-    normal_np = np.flipud(normal_np)
-    normal_map_field.from_numpy(np.ascontiguousarray(normal_np.astype(np.float32)))
+
+    load_texture_to_field(disp_path, disp_field, mode="L")
 
     # Bump Map
     if os.path.exists(bump_path):
         final_bump_path = "outputs/subtracted_bump.png"
         subtract(bump_path, height_path, final_bump_path)
-        img_bump = Image.open(final_bump_path).convert("L").resize((K, K), Image.BILINEAR)
-        bump_np = np.asarray(img_bump, dtype=np.float32) / 255.0
-        bump_np = np.flipud(bump_np)
-        bump_field.from_numpy(np.ascontiguousarray(bump_np.astype(np.float32)))
+        load_texture_to_field(final_bump_path, bump_field, mode="L")
     else:
         print(f"Warning: Bump map not found at {bump_path}")
 
     # Roughness Map
-    mean_roughness = 0.5
     if os.path.exists(roughness_path):
         final_roughness_path = "outputs/subtracted_roughness.png"
         subtract(roughness_path, height_path, final_roughness_path)
-        img_roughness = Image.open(final_roughness_path).convert("L").resize((K, K), Image.BILINEAR)
-        roughness_np = np.asarray(img_roughness, dtype=np.float32) / 255.0
-        roughness_np = np.flipud(roughness_np)
-        roughness_field.from_numpy(np.ascontiguousarray(roughness_np.astype(np.float32)))
-        mean_roughness = float(np.mean(roughness_np))
+        load_texture_to_field(final_roughness_path, roughness_field, mode="L")
     else:
         print(f"Warning: Roughness map not found at {roughness_path}")
 
@@ -427,7 +437,7 @@ if __name__ == "__main__":
     
     light_angle = 0.0
     while window.running:
-        for _ in range(60):
+        for _ in range(120):
             substep()
 
         update_sim_normals()
@@ -439,7 +449,6 @@ if __name__ == "__main__":
         scene.ambient_light((0.45, 0.45, 0.45))
         scene.point_light(pos=(10.0, 15.0, 0.0), color=(0.9, 0.9, 1.0))
         
-        # Apply the roughness and metallic properties directly here
         scene.mesh(
             vertices, 
             indices=indices, 

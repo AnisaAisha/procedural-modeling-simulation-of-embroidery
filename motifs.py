@@ -94,23 +94,19 @@ start_angle = ti.field(dtype=ti.f32, shape=(len(token_array)))
 # Field to communicate the auto-scale factor between kernels
 global_scale = ti.field(dtype=ti.f32, shape=()) 
 
-stack_x = ti.field(dtype=ti.f32, shape=(50))
-stack_y = ti.field(dtype=ti.f32, shape=(50))
-stack_angle = ti.field(dtype=ti.f32, shape=(50))
+stack = ti.field(dtype=ti.types.vector(3, dtype=ti.f32), shape=(50))
 stack_ptr = ti.field(dtype=ti.int32, shape=(1))
 
 @ti.func
 def push(x, y, angle):
-  stack_x[stack_ptr[0]] = x
-  stack_y[stack_ptr[0]] = y
-  stack_angle[stack_ptr[0]] = angle
+  stack[stack_ptr[0]] = ti.Vector([x, y, angle])
   stack_ptr[0] +=1
 
 @ti.func
 def pop():
-  temp_x = stack_x[stack_ptr[0]-1]
-  temp_y = stack_y[stack_ptr[0]-1]
-  temp_z = stack_angle[stack_ptr[0]-1]
+  temp_x = stack[stack_ptr[0]-1].x
+  temp_y = stack[stack_ptr[0]-1].y
+  temp_z = stack[stack_ptr[0]-1].z
   stack_ptr[0] -= 1
   return (temp_x, temp_y, temp_z)
 
@@ -250,4 +246,5 @@ draw_in_parallel(side_length_A, side_length_B)
 gui = ti.GUI(name="Centered & Scaled Motif", res=(n, n))
 while gui.running:
     gui.set_image(pixels)
-    gui.show("outputs/motif3.png")
+    # gui.show("outputs/motif3.png")
+    gui.show()

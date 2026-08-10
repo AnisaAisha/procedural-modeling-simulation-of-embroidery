@@ -15,41 +15,50 @@ MOTIFS = {
     "2": "outputs/motif_2_filled.png",
     "3": "outputs/motif_3_filled.png",
     "4": "outputs/motif_4_filled.png",
+    "5": "outputs/chadar.png"
 }
-MOTIF_KEY = "2"
+MOTIF_KEY = "3"
 INPUT_IMAGE = MOTIFS.get(MOTIF_KEY)
 
 # File Paths for New Maps
 BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
 ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
-BUMP_STRENGTH = 0.005
+BUMP_STRENGTH = 0.01
 
 # Map and Grid settings
 K = 1024
-GRID_ROWS = 500
-GRID_COLS = 500
+SIM_ROWS = 60
+SIM_COLS = 60
+
+RENDER_ROWS = 60
+RENDER_COLS = 600
+
 CLOTH_WIDTH = 7.0
 CLOTH_HEIGHT = 7.0
 
 # TOTAL_SIZE = (grid_cols - 1) * 0.25
-spacing = CLOTH_HEIGHT/ (GRID_COLS-1)
-HEIGHT_SCALE = 0.06
+sim_spacing = CLOTH_HEIGHT/ (SIM_COLS-1)
+HEIGHT_SCALE = 0.09
 
-num_vertices = GRID_ROWS * GRID_COLS
-num_triangles = (GRID_ROWS - 1) * (GRID_COLS - 1) * 2
+num_vertices = RENDER_ROWS * RENDER_COLS
+num_triangles = (RENDER_ROWS - 1) * (RENDER_COLS - 1) * 2
 
-num_springs = (GRID_ROWS * (GRID_COLS - 1)) + (GRID_COLS * (GRID_ROWS - 1)) \
-            + (2 * (GRID_ROWS - 1) * (GRID_COLS - 1)) + (GRID_ROWS * (GRID_COLS - 2)) + (GRID_COLS * (GRID_ROWS - 2))   
+num_particles = SIM_COLS * SIM_ROWS
+num_springs = (SIM_ROWS * (SIM_COLS - 1)) + (SIM_COLS * (SIM_ROWS - 1)) \
+            + (2 * (SIM_ROWS - 1) * (SIM_COLS - 1)) + (SIM_ROWS * (SIM_COLS - 2)) + (SIM_COLS * (SIM_ROWS - 2))
 
 # Physics Constants
 dt = 5e-4
 gravity = ti.Vector([0, -0.5, 0])
 drag_damping = 0.1
 
-spring_k_structural = 1.0 / 1000000.0
-spring_k_shear = 1.0 / 1000000.0 
-spring_k_bend = 1.0 / 80000.0 
+spring_k_structural = 1.0 / 25000.0 
+spring_k_shear = 1.0 / 25000.0 
+spring_k_bend = 1.0 / 25000.0 
 
+# spring_k_structural = 1.0 / 500.0
+# spring_k_shear = 1.0 / 500.0 
+# spring_k_bend = 0.1 / 250.0 
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
@@ -70,10 +79,11 @@ class Particle:
 
 vertices = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)
 normals = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)
+sim_normals = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
 colors = ti.Vector.field(3, dtype=ti.f32, shape=num_vertices)
 indices = ti.field(dtype=ti.i32, shape=num_triangles * 3)
 
-particles = Particle.field(shape=num_vertices)
+particles = Particle.field(shape=num_particles)
 springs = Spring.field(shape=num_springs)
 
 heightmap = ti.field(dtype=ti.f32, shape=(K, K))
@@ -88,52 +98,52 @@ roughness_field = ti.field(dtype=ti.f32, shape=(K, K))
 # =============================================================================
 @ti.kernel
 def build_initial_state():
-    for i, j in ti.ndrange(GRID_ROWS, GRID_COLS):
-        idx = i * GRID_COLS + j
-        x = (j * spacing) - (GRID_COLS - 1) * spacing / 2.0
-        z = (i * spacing) - (GRID_ROWS - 1) * spacing / 2.0
+    for i, j in ti.ndrange(SIM_ROWS, SIM_COLS):
+        idx = i * SIM_COLS + j
+        x = (j * sim_spacing) - (SIM_COLS - 1) * sim_spacing / 2.0
+        z = (i * sim_spacing) - (SIM_ROWS - 1) * sim_spacing / 2.0
         pos = ti.Vector([x, 2.0, z])
         particles[idx] = Particle(pos, pos, 0.0, 1.0, 0)
 
     # Fix two corners
-    for i, j in ti.ndrange(GRID_ROWS, GRID_COLS):
+    for i, j in ti.ndrange(SIM_ROWS, SIM_COLS):
         particles[j].is_fixed = 1
 
 def init_springs_state():
     # Pre-calculate positions on CPU to avoid allocating giant dynamic arrays in python
     s_list = []
     
-    for i in range(GRID_ROWS):
-        for j in range(GRID_COLS):
-            idx = i * GRID_COLS + j
+    for i in range(SIM_ROWS):
+        for j in range(SIM_COLS):
+            idx = i * SIM_COLS + j
             
-            x = (j * spacing)
-            z = (i * spacing)
+            x = (j * sim_spacing)
+            z = (i * sim_spacing)
             pos = np.array([x, 2.0, z])
             
-            if j < GRID_COLS - 1:
-                right_idx = i * GRID_COLS + (j + 1)
-                right_pos = np.array([(j + 1) * spacing, 2.0, z])
+            if j < SIM_COLS - 1:
+                right_idx = i * SIM_COLS + (j + 1)
+                right_pos = np.array([(j + 1) * sim_spacing, 2.0, z])
                 s_list.append((idx, right_idx, np.linalg.norm(pos - right_pos), spring_k_structural))
-            if i < GRID_ROWS - 1:
-                bottom_idx = (i+1) * GRID_COLS + j
-                bottom_pos = np.array([x, 2.0, (i + 1) * spacing])
+            if i < SIM_ROWS - 1:
+                bottom_idx = (i+1) * SIM_COLS + j
+                bottom_pos = np.array([x, 2.0, (i + 1) * sim_spacing])
                 s_list.append((idx, bottom_idx, np.linalg.norm(pos - bottom_pos), spring_k_structural))
-            if i < GRID_ROWS - 1 and j < GRID_COLS - 1:
-                bottom_right = (i + 1) * GRID_COLS + (j + 1)
-                br_pos = np.array([(j + 1) * spacing, 2.0, (i + 1) * spacing])
+            if i < SIM_ROWS - 1 and j < SIM_COLS - 1:
+                bottom_right = (i + 1) * SIM_COLS + (j + 1)
+                br_pos = np.array([(j + 1) * sim_spacing, 2.0, (i + 1) * sim_spacing])
                 s_list.append((idx, bottom_right, np.linalg.norm(pos - br_pos), spring_k_shear))
-            if i < GRID_ROWS - 1 and j > 0:
-                bottom_left = (i + 1) * GRID_COLS + (j - 1)
-                bl_pos = np.array([(j - 1) * spacing, 2.0, (i + 1) * spacing])
+            if i < SIM_ROWS - 1 and j > 0:
+                bottom_left = (i + 1) * SIM_COLS + (j - 1)
+                bl_pos = np.array([(j - 1) * sim_spacing, 2.0, (i + 1) * sim_spacing])
                 s_list.append((idx, bottom_left, np.linalg.norm(pos - bl_pos), spring_k_shear))
-            if j < GRID_COLS - 2:
-                right2 = i * GRID_COLS + (j + 2)
-                r2_pos = np.array([(j + 2) * spacing, 2.0, z])
+            if j < SIM_COLS - 2:
+                right2 = i * SIM_COLS + (j + 2)
+                r2_pos = np.array([(j + 2) * sim_spacing, 2.0, z])
                 s_list.append((idx, right2, np.linalg.norm(pos - r2_pos), spring_k_bend))
-            if i < GRID_ROWS - 2:
-                bottom2 = (i + 2) * GRID_COLS + j
-                b2_pos = np.array([x, 2.0, (i + 2) * spacing])
+            if i < SIM_ROWS - 2:
+                bottom2 = (i + 2) * SIM_COLS + j
+                b2_pos = np.array([x, 2.0, (i + 2) * sim_spacing])
                 s_list.append((idx, bottom2, np.linalg.norm(pos - b2_pos), spring_k_bend))
     
     # Upload to Taichi
@@ -144,15 +154,15 @@ def init_springs_state():
 
 @ti.kernel
 def build_indices():
-    for i, j in ti.ndrange(GRID_ROWS - 1, GRID_COLS - 1):
-        quad_id = i * (GRID_COLS - 1) + j
-        base = i * GRID_COLS + j
+    for i, j in ti.ndrange(RENDER_ROWS - 1, RENDER_COLS - 1):
+        quad_id = i * (RENDER_COLS - 1) + j
+        base = i * RENDER_COLS + j
         indices[quad_id * 6 + 0] = base
-        indices[quad_id * 6 + 1] = base + GRID_COLS
+        indices[quad_id * 6 + 1] = base + RENDER_COLS
         indices[quad_id * 6 + 2] = base + 1
-        indices[quad_id * 6 + 3] = base + GRID_COLS + 1
+        indices[quad_id * 6 + 3] = base + RENDER_COLS + 1
         indices[quad_id * 6 + 4] = base + 1
-        indices[quad_id * 6 + 5] = base + GRID_COLS
+        indices[quad_id * 6 + 5] = base + RENDER_COLS
 
 # =============================================================================
 # PHYSICS SIMULATION
@@ -177,8 +187,8 @@ def solve_spring(s: Spring):
 
 @ti.kernel
 def substep():
-    for i, j in ti.ndrange(GRID_ROWS, GRID_COLS):
-        idx = i * GRID_COLS + j
+    for i, j in ti.ndrange(SIM_ROWS, SIM_COLS):
+        idx = i * SIM_COLS + j
         if particles[idx].is_fixed == 0:
             particles[idx].vel += dt * gravity
             particles[idx].vel *= ti.exp(-drag_damping * dt)
@@ -188,99 +198,125 @@ def substep():
     for s in ti.grouped(springs):
         solve_spring(springs[s])
 
-    for i, j in ti.ndrange(GRID_ROWS, GRID_COLS):
-        idx = i * GRID_COLS + j
+    for i, j in ti.ndrange(SIM_ROWS, SIM_COLS):
+        idx = i * SIM_COLS + j
         if particles[idx].is_fixed == 0:
             particles[idx].vel = (particles[idx].pos - particles[idx].prev_pos)/dt
 
 # =============================================================================
 # TEXTURE AND NORMAL MAPPING
 # =============================================================================
+
+@ti.kernel
+def update_sim_normals():
+    for i, j in ti.ndrange(SIM_ROWS, SIM_COLS):
+        idx = i * SIM_COLS + j
+        
+        # Get neighboring physics particles
+        i0, i1 = ti.max(i - 1, 0), ti.min(i + 1, SIM_ROWS - 1)
+        j0, j1 = ti.max(j - 1, 0), ti.min(j + 1, SIM_COLS - 1)
+        
+        vL = particles[i * SIM_COLS + j0].pos
+        vR = particles[i * SIM_COLS + j1].pos
+        vD = particles[i0 * SIM_COLS + j].pos
+        vU = particles[i1 * SIM_COLS + j].pos
+        
+        # Calculate and store the smooth normal
+        sim_normals[idx] = (vU - vD).cross(vR - vL).normalized()
+
 @ti.kernel
 def update_mesh(h_scale: ti.f32, detail_strength: ti.f32, bump_strength: ti.f32):
-    # Pass 1: Apply color (with Roughness AO trick), position, and displacement
-    for i, j in ti.ndrange(GRID_ROWS, GRID_COLS):
-        idx = i * GRID_COLS + j
-        u = j / (GRID_COLS - 1)
-        v = i / (GRID_ROWS - 1)
+    # ONE PASS: Handle Interpolation, Displacement, and Normal Mapping together
+    for i, j in ti.ndrange(RENDER_ROWS, RENDER_COLS):
+        idx = i * RENDER_COLS + j
+        
+        u = j / (RENDER_COLS - 1)
+        v = i / (RENDER_ROWS - 1)
         
         tx = ti.cast(u * (K - 1), ti.i32)
         ty = ti.cast(v * (K - 1), ti.i32)
         
-        # Ambient Occlusion Trick: Darken the base color in deep crevices
+        # --- 1. Texture & Ambient Occlusion ---
         roughness = roughness_field[tx, ty]
         ao = 1.0 - (roughness * 0.4)
         colors[idx] = color_field[tx, ty] * ao
         
-        # Calculate macro normal roughly to displace along it
-        i0, i1 = ti.max(i - 1, 0), ti.min(i + 1, GRID_ROWS - 1)
-        j0, j1 = ti.max(j - 1, 0), ti.min(j + 1, GRID_COLS - 1)
+        # --- 2. Smooth Grid Interpolation ---
+        sim_j = u * (SIM_COLS - 1)
+        sim_i = v * (SIM_ROWS - 1)
         
-        vL = particles[i * GRID_COLS + j0].pos
-        vR = particles[i * GRID_COLS + j1].pos
-        vD = particles[i0 * GRID_COLS + j].pos
-        vU = particles[i1 * GRID_COLS + j].pos
+        j0 = ti.cast(ti.floor(sim_j), ti.i32)
+        i0 = ti.cast(ti.floor(sim_i), ti.i32)
+        j1 = ti.min(j0 + 1, SIM_COLS - 1)
+        i1 = ti.min(i0 + 1, SIM_ROWS - 1)
         
-        geo_normal = (vU - vD).cross(vR - vL).normalized()
+        wx = sim_j - j0
+        wy = sim_i - i0
         
-        # Base position from physics
-        base_pos = particles[idx].pos
+        idx00 = i0 * SIM_COLS + j0
+        idx10 = i0 * SIM_COLS + j1
+        idx01 = i1 * SIM_COLS + j0
+        idx11 = i1 * SIM_COLS + j1
         
-        # Displace along the geometry normal
+        # Fetch Physics Particles
+        p00 = particles[idx00].pos
+        p10 = particles[idx10].pos
+        p01 = particles[idx01].pos
+        p11 = particles[idx11].pos
+        
+        # Fetch Smooth Physics Normals (calculated in update_sim_normals)
+        n00 = sim_normals[idx00]
+        n10 = sim_normals[idx10]
+        n01 = sim_normals[idx01]
+        n11 = sim_normals[idx11]
+        
+        # Interpolate Base Position smoothly
+        top_pos = p00 * (1.0 - wx) + p10 * wx
+        bot_pos = p01 * (1.0 - wx) + p11 * wx
+        base_pos = top_pos * (1.0 - wy) + bot_pos * wy
+        
+        # Interpolate Geometry Normal smoothly
+        top_norm = n00 * (1.0 - wx) + n10 * wx
+        bot_norm = n01 * (1.0 - wx) + n11 * wx
+        geo = (top_norm * (1.0 - wy) + bot_norm * wy).normalized()
+        
+        # --- 3. Displacement ---
+        # Push the vertex out along the smooth normal
         disp = disp_field[tx, ty] * h_scale
-        vertices[idx] = base_pos + geo_normal * disp
-
-    # Pass 2: Calculate accurate dynamic TBN blended normals + Bump Map
-    for i, j in ti.ndrange(GRID_ROWS, GRID_COLS):
-        idx = i * GRID_COLS + j
-        u = j / (GRID_COLS - 1)
-        v = i / (GRID_ROWS - 1)
+        vertices[idx] = base_pos + geo * disp
         
-        tx = ti.cast(u * (K - 1), ti.i32)
-        ty = ti.cast(v * (K - 1), ti.i32)
+        # --- 4. Smooth Tangent Space (TBN) ---
+        # Derive smooth tangents from the interpolated grid flow, NOT neighboring vertices
+        raw_tangent = (p10 - p00) * (1.0 - wy) + (p11 - p01) * wy
         
-        i0, i1 = ti.max(i - 1, 0), ti.min(i + 1, GRID_ROWS - 1)
-        j0, j1 = ti.max(j - 1, 0), ti.min(j + 1, GRID_COLS - 1)
+        # Gram-Schmidt Orthogonalization (forces the tangent to be perfectly 90 degrees to the normal)
+        tangent = (raw_tangent - geo * raw_tangent.dot(geo)).normalized()
+        bitangent = geo.cross(tangent).normalized()
         
-        vL = vertices[i * GRID_COLS + j0]
-        vR = vertices[i * GRID_COLS + j1]
-        vD = vertices[i0 * GRID_COLS + j]
-        vU = vertices[i1 * GRID_COLS + j]
-        
-        # Tangent space vectors for the waving cloth
-        tangent = (vR - vL).normalized()
-        bitangent = (vU - vD).normalized()
-        geo = bitangent.cross(tangent).normalized() # Upwards normal
-        
-        # Base Micro-detail normals from the normal map
+        # --- 5. Normal & Bump Mapping ---
         nx = normal_map_field[tx, ty][0] * 2.0 - 1.0
         ny = normal_map_field[tx, ty][1] * 2.0 - 1.0
         nz = normal_map_field[tx, ty][2] * 2.0 - 1.0
         
-        # Get neighboring pixels for bump map slopes (clamping to the image edges)
         tx_right = ti.min(tx + 1, K - 1)
         tx_left = ti.max(tx - 1, 0)
         ty_up = ti.min(ty + 1, K - 1)
         ty_down = ti.max(ty - 1, 0)
         
-        # Calculate the slopes using the bump map field
         slope_x = (bump_field[tx_right, ty] - bump_field[tx_left, ty]) * bump_strength
         slope_z = (bump_field[tx, ty_up] - bump_field[tx, ty_down]) * bump_strength
         
-        # Tilt the local normal vector opposite to the slopes
         nx -= slope_x
         nz -= slope_z
         
-        # Normalize perturbed local map normals
         len_n = ti.math.sqrt(nx*nx + ny*ny + nz*nz)
         if len_n > 1e-6:
             nx /= len_n
             ny /= len_n
             nz /= len_n
-        
-        # Map tangent space normal [nx, ny, nz] (ny points UP in image map) to dynamic world space
+            
+        # Map micro-details to dynamic world space using the smooth TBN matrix
         detail_world = (nx * tangent) + (nz * bitangent) + (ny * geo)
-        
         normals[idx] = (geo + detail_strength * (detail_world - geo)).normalized()
 
 # =============================================================================
@@ -392,20 +428,17 @@ if __name__ == "__main__":
     
     light_angle = 0.0
     while window.running:
-        for _ in range(50):
+        for _ in range(120):
             substep()
-            
+
+        update_sim_normals()
         update_mesh(HEIGHT_SCALE, 0.85, BUMP_STRENGTH)
         
         camera.track_user_inputs(window, movement_speed=0.05, hold_key=ti.ui.RMB)
         scene.set_camera(camera)
         
-        light_angle += 0.02
-        light_x = np.sin(light_angle) * 3.0
-        light_z = np.cos(light_angle) * 3.0
-        
         scene.ambient_light((0.45, 0.45, 0.45))
-        scene.point_light(pos=(light_x, 3.0, light_z), color=(1.0, 1.0, 1.0))
+        scene.point_light(pos=(10.0, 15.0, 0.0), color=(0.9, 0.9, 1.0))
         
         # Apply the roughness and metallic properties directly here
         scene.mesh(
