@@ -9,7 +9,7 @@ ti.init(arch=ti.vulkan, default_ip=ti.i32)
 # CAM_POS: (x, y, z) -- y is height above the plane, z is how far back
 # the camera sits (the ray direction below points toward +z, so more
 # negative z = further away). Moved further back and lower than before.
-CAM_POS = tm.vec3(0.0, 15.0, -15.0)
+CAM_POS = tm.vec3(0.0, 20.0, -20.0)
 width = height = 600
 
 SQUARE_SIZE = 10.0
