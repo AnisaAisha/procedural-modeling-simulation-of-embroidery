@@ -31,7 +31,7 @@ def generate_normal_map(height01, strength=1.5):
     return rgb, vec
 
 # UPDATED: Removed the 'size' parameter
-def process_image(image_path, out_dir="."):
+def process_image(image_path, normal_strength):
     print(f"Loading {image_path}...")
     img = Image.open(image_path).convert("RGBA")
     
@@ -102,37 +102,18 @@ def process_image(image_path, out_dir="."):
     height = (ridge * amplitude).astype(np.float32)
     
     # Normal map from sharp height (Increased strength for high-res visibility)
-    normal_rgb, _ = generate_normal_map(height, strength=1.5)
+    normal_rgb, _ = generate_normal_map(height, strength=normal_strength)
     
     # Smooth height for displacement map
     height_disp = cv2.GaussianBlur(height, (0, 0), 2.0)
     height_disp_rgb = np.clip(height_disp * 255.0, 0, 255).astype(np.uint8)
     
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    height_out = os.path.join(out_dir, f"outputs/{base_name}_height.png")
-    normal_out = os.path.join(out_dir, f"outputs/{base_name}_normal.png")
+    height_out = "outputs/height_map.png"
+    normal_out = "outputs/normal_map.png"
     
     Image.fromarray(height_disp_rgb).save(height_out)
     Image.fromarray(normal_rgb).save(normal_out)
     
     print(f"Saved: {height_out}")
     print(f"Saved: {normal_out}")
-
-def _resolve(path):
-    if os.path.isabs(path):
-        return path
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, path)
-
-if __name__ == "__main__":
-    image_path = MOTIFS.get(MOTIF_KEY)
-    if image_path:
-        full_path = _resolve(image_path)
-        out_directory = _resolve(".")
-        if os.path.exists(full_path):
-            # UPDATED: Call process_image without forcing a size
-            process_image(full_path, out_dir=out_directory)
-        else:
-            print(f"Error: Could not find image for MOTIF_KEY '{MOTIF_KEY}' (Path: {full_path})")
-    else:
-        print(f"Error: Invalid MOTIF_KEY '{MOTIF_KEY}'")

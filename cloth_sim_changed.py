@@ -3,7 +3,9 @@ import taichi as ti
 import numpy as np
 from PIL import Image
 from image_compositing import *
-from generate_motif_map import *
+from displacement_map_gen import *
+from height_and_normal_map_gen import process_image
+from cloth_texture_gen import generate_bump_map, generate_roughness_map
 
 ti.init(arch=ti.gpu, default_ip=ti.i32)
 
@@ -32,11 +34,11 @@ with Image.open(input_path) as tmp:
 TEX_W = IMG_W
 TEX_H = IMG_H
 
-RENDER_COLS = 600
-RENDER_ROWS = 960
+# RENDER_COLS = 1020
+# RENDER_ROWS = 1632
 
-# RENDER_COLS = 600
-# RENDER_ROWS = 600
+RENDER_COLS = 600
+RENDER_ROWS = 600
 
 # Scale down physics grid to maintain real-time performance (roughly 1/10th resolution)
 SIM_COLS = max(2, IMG_W // 10)
@@ -63,12 +65,12 @@ drag_damping = 0.1
 
 spring_k_structural = 1.0 / 25000.0 
 spring_k_shear = 1.0 / 25000.0 
-spring_k_bend = 1.0 / 25000.0 
+spring_k_bend = 1.0 / 20000.0 
 
 # File Paths for New Maps
 BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
 ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
-BUMP_STRENGTH = 0.01
+BUMP_STRENGTH = 0.005
 
 # =============================================================================
 # DATA STRUCTURES
@@ -337,18 +339,19 @@ def load_texture_to_field(path, field, mode="RGB"):
 # =============================================================================
 if __name__ == "__main__":
     print("Loading textures...")
-    height_path = "outputs/chadar_height.png"
+    height_path = "outputs/height_map.png"
     disp_path = DISPLACEMENT_MAP_OUT
-    normal_path = "outputs/chadar_normal.png"
-    # height_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_height.png")
-    # disp_path = DISPLACEMENT_MAP_OUT
-    # normal_path = os.path.join(here, f"outputs/motif_{MOTIF_KEY}_filled_normal.png")
+    normal_path = "outputs/normal_map.png"
     bump_path = os.path.join(here, BUMP_MAP_PATH)
     roughness_path = os.path.join(here, ROUGHNESS_MAP_PATH)
     
-    if not os.path.exists(height_path) or not os.path.exists(normal_path):
-        print(f"Error: Maps not found for {INPUT_IMAGE}. Please run generate_maps.py first!")
-        exit(1)
+    # if not os.path.exists(height_path) or not os.path.exists(normal_path):
+    #     print(f"Error: Maps not found for {INPUT_IMAGE}. Please run generate_maps.py first!")
+    #     exit(1)
+
+    generate_bump_map(IMG_W, IMG_H, bump_path)
+    generate_roughness_map(bump_path, roughness_path)
+    process_image(input_path, normal_strength=1.5)
         
     # Standard Maps - Uses new Helper Function
     load_texture_to_field(input_path, color_field, mode="RGB")
@@ -372,9 +375,6 @@ if __name__ == "__main__":
     )
     
     red_mask_np = np.swapaxes(heightmap.to_numpy(), 0, 1) 
-
-    # 2. Process the ridges and fine details on the CPU
-    # ... (Keep the generate_individual_stitch_ridges block exactly the same) ...
 
     # 2. Process the ridges and fine details on the CPU
     ridge_np = generate_individual_stitch_ridges(
