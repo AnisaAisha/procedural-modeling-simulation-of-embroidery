@@ -2,8 +2,9 @@ import numpy as np
 import cv2
 from PIL import Image
 
-ROUGHNESS_PATH = "weave_roughness_map.png"
+ROUGHNESS_PATH = "smooth_weave_roughness_map.png"
 BUMP_OUT_PATH = "weave_bump_map.png"
+
 
 
 def build_bump_map(height_np, blur_ksize=3, sobel_ksize=3):
