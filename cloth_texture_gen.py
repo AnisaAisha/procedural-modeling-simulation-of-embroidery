@@ -9,8 +9,8 @@ PHASE_JITTER_SCALE = 30
 PHASE_JITTER_DEG = 30.0    
 
 # Roughness parameters
-BASE_ROUGHNESS = 0.05      # The overall shininess of the thread material | 0.5 for khaddar, 0.05 for cotton
-CREVICE_ROUGHNESS = 0.1    # The roughness deep in the gaps between threads | 0.2 for khaddar, 0.1 for cotton
+BASE_ROUGHNESS = 0.5      # The overall shininess of the thread material | 0.5 for khaddar, 0.05 for cotton
+CREVICE_ROUGHNESS = 0.2    # The roughness deep in the gaps between threads | 0.2 for khaddar, 0.1 for cotton
 SLOPE_SCATTER = 0.1        # 0.1 for khaddar, same for cotton
 
 # Output file paths

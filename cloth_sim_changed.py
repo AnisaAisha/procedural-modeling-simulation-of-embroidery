@@ -34,11 +34,11 @@ with Image.open(input_path) as tmp:
 TEX_W = IMG_W
 TEX_H = IMG_H
 
-# RENDER_COLS = 1020
-# RENDER_ROWS = 1632
+RENDER_COLS = 1020
+RENDER_ROWS = 1632
 
-RENDER_COLS = 600
-RENDER_ROWS = 600
+# RENDER_COLS = 600
+# RENDER_ROWS = 600
 
 # Scale down physics grid to maintain real-time performance (roughly 1/10th resolution)
 SIM_COLS = max(2, IMG_W // 10)
@@ -70,7 +70,7 @@ spring_k_bend = 1.0 / 20000.0
 # File Paths for New Maps
 BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
 ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
-BUMP_STRENGTH = 0.005
+BUMP_STRENGTH = 0.01
 
 # =============================================================================
 # DATA STRUCTURES
