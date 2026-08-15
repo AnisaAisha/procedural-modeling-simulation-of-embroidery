@@ -13,19 +13,20 @@ axiom_3 = "[[---b[->>>>AAA----BBBB--AAABB]ab[->>>>AA----BBBB--AAB]ab[->>>>BBBBBB
 rule = {"F" : "[+BBBBB-F[+BBBBB-]A[+BBBB+++++A]A[+BBB+++++A]A[+BB+++++A]A[+B+++++A]]",
         'M': 'A[+BBBB+++++A][-BBBB-----A]A[+BBB+++++A][-BBB-----A]A[+BB+++++A][-BB-----A]A[+B+++++A][-B-----A]',
         'H': 'BH',
-        'K': "[+++[+++BBBBB]+B[++BBBBB++++B]-+B[++BBBB++++B]-+B[++BBB++++B]-+B[++BB++++B]-+B[++B++++B][-+++aaa--b----AAA--b----AAA]]", 
-        'Q': "[BBBB-----BBBB-BBBB-----BBBB]", 
+        'K': "[+++[+++BBBBB]+B[++BBBBB++++B]-+B[++BBBB++++B]-+B[++BBB++++B]-+B[++BB++++B]-+B[++B++++B][-+++aaa--b----AAA--b----AAA]]", # Can make this a closed shape by replacing B instead of b in the line part
+        'Q': "[BBBB-----BBBB-BBBB-----BBBB]", # small parallelogram
         'W': axiom_3 + "---abb---aabb" + "[bb[BBBBB-----<<AAABB->>BBBBB---->>>>AAABB]abbbb-----abbb+++++[BBBBB-----<<AAB->>BBBBB---->>>>AAB]abbb-----bbbbbbb+++++[BBBB-----<<ABB->>BBBB---->>>>ABB]ab-----bbbbb+++++[BBBB-----<<BBBB->>BBBB---->>>>BBBB]]",
         'X': "[[++++++AAAAAAB+++AAAABB]-----<BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB[++++bbbQ]BBBBB]",
         'Z': "[+++[BBBB-----<<BBBBB->>>BBBB---->>>BBBBB]a[BBBB-----<<ABBBB->>>BBBB---->>>ABBBB]]",
-        'V': "[AAA+++++++++AA+++AAA+++++++++AA+++]", 
-        'U': "[AAA---------AA---AAA---------AA---]", 
+        'V': "[AAA+++++++++AA+++AAA+++++++++AA+++]", # Right Base (Leans Left)
+        'U': "[AAA---------AA---AAA---------AA---]", # Left Base (Leans Right)
         
         # --- New Structural Bricks (For Motif 1) ---
-        'v': "aaaaaaa",     
-        'c': "aa",          
-        'P': "[VvVvVvV]---aaaaa+++[VvVvV]---aaaaa+++[VvV]---aaaaa+++[V]", 
-        'C': "[UvUvUvU]+++aaaaa---[UvUvU]+++aaaaa---[UvU]+++aaaaa---[U]"  
+        'v': "aaaaaaa",     # Vertical gap between rows
+        'c': "aa",          # Half of the center gap
+        # The Halves
+        'P': "[VvVvVvV]---aaaaa+++[VvVvV]---aaaaa+++[VvV]---aaaaa+++[V]", # Full Right Half (4, 3, 2, 1)
+        'C': "[UvUvUvU]+++aaaaa---[UvUvU]+++aaaaa---[UvU]+++aaaaa---[U]"  # Full Left Half (4, 3, 2, 1)
       }
 
 def generate_l_system(axiom, rules, iterations):
@@ -41,12 +42,16 @@ def generate_l_system(axiom, rules, iterations):
     temp = ""
   return current_string
 
+ 
 def mirror(symbol, iterations=3):
+  # Non-recursive case: Expand the symbol, then swap angles from '+-<>' to '-+><'
   mirror_table = str.maketrans('+-<>', '-+><')
   if symbol not in rule[symbol]:
     expanded = generate_l_system(symbol, rule, iterations)
     return expanded.translate(mirror_table)
 
+  # Recursive symbol case: Swap the angles and store the axiom in a temp symbol
+  # Change the original symbol in the axiom to temp symbol for recursive call
   rules_copy = rule.copy()
   temp_symbol = 'x'
   if symbol in rules_copy:

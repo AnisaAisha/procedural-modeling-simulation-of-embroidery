@@ -79,6 +79,15 @@ def sdf(p):
 
     return smin(line1, smin(line2, smin(line3, smin(line4, line5, BLEND_STRENGTH), BLEND_STRENGTH), BLEND_STRENGTH), BLEND_STRENGTH)
 
+# Scene construction with SDFs
+@ti.func
+def sdf(p):
+    # only have one sphere in scene
+    sphere_c = tm.vec3(-2.0, 1.0, 0.0)
+    sphere_r = 0.25
+    sphere = sdfSphere(p, sphere_c, sphere_r)
+
+    return sphere
 
 # Ray marching algorithm: origin - ray origin; dir - ray direction 
 @ti.func
@@ -86,11 +95,9 @@ def rayMarching(origin, dir, steps: ti.i32):
     s = 0.0
     for i in range(steps):
         p = origin + s * dir
+        s += sdf(p)
 
-        step_dist = sdf(p)
-        s += step_dist
-
-        if (step_dist < 0.001):
+        if (s < 0.001):
             break
     return s
 
