@@ -4,15 +4,31 @@ import math
 import numpy as np
 import cv2
 from PIL import Image
+import random
 
-ti.init(arch=ti.vulkan, default_ip=ti.i32)
+ti.init(arch=ti.gpu, default_ip=ti.i32)
 #window screen size
 width = height = 600
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width, height))
 
+TEX_SCALE = 0.1/4          # smaller = bigger tiles, larger = more repeats
+BUMP_STRENGTH = 0.3      # how strongly the weave perturbs the normal (gradient is pre-normalized to [-1,1])
+AO_STRENGTH = 0.4        # how much rough valleys darken ambient light
+ANISO_STRENGTH = 0.8   # blend amount of the thread-direction sheen
+
+# --- overhead spotlight -------------------------------------------------------
+# One light for the whole scene: shading and cast shadows have to come from the
+# same source or they visibly disagree. Sits directly above the square's centre
+# pointing straight down.
+SPOT_POS = tm.vec3(0.0, 22.0, 0.0)
+SPOT_DIR = tm.vec3(0.0, -1.0, 0.0)
+SPOT_INNER = 0.955   # cos of the angle where the light is still at full strength
+SPOT_OUTER = 0.72    # cos of the angle where it has faded out completely
+SPOT_SOFTNESS = 24.0 # lower = softer, more spread-out shadow edges
+SPOT_STEPS = 48      # shadow-ray march budget (each step is a full SDF call)
 
 # --- Constants ---
-SQUARE_SIZE = 2.0
+SQUARE_SIZE = 1.0
 SPACING = 0.15
 THICKNESS = 0.05 #thickness of one TWISTED strand
 TEX_SCALE = 0.1
@@ -26,7 +42,7 @@ NUM_STITCHES =  int(SQUARE_SIZE / SPACING)
 IDX_MIN = -(NUM_STITCHES // 2)            # -6 for 13 stitches
 IDX_MAX = IDX_MIN + NUM_STITCHES - 1      #  6
 
-DRAW_SPEED = 0.8
+DRAW_SPEED = 0.7
 # STITCH_DELAY not start sttich until first complete
 
 BOUNDARY_THICKNESS = SQUARE_SIZE * 0.01   # width of the square outline on the plane
@@ -35,37 +51,15 @@ BOUNDARY_THICKNESS = SQUARE_SIZE * 0.01   # width of the square outline on the p
 #add 1 square lenght to it to give leverage to last stitch +SQUARE_SIZE = 28)
 THREAD_TOTAL = (NUM_STITCHES * SQUARE_SIZE) + SQUARE_SIZE
 
-
-ARCH_SCALE = 0.05   #a huge val spike is scaled down by this factor while drawing, this brings them into scale with the square. 0.05 -> 0.70 down to 0.08.
-MIN_ARCH   = 0.0   #a val toensure no stitch goes in negative height dispalcement
-
-def arc_length(H):
-    #formula to find lenght of arclenght over the suqaure_size (the hieght it goes up)
-    k = 4.0 * H / SQUARE_SIZE
-    if k < 1e-9:
-        return SQUARE_SIZE          #flat thread is like length of thread itself
-    return SQUARE_SIZE * (math.sqrt(1.0 + k * k) / 2.0 + math.asinh(k) / (2.0 * k))
-
-def height_for_length(target):
-    #a trial and error way to guess if a cerain value H for a lenght target (of the string) is short or less or just fine
-    lo, hi = 0.0, target
-    for _ in range(80):
-        mid = 0.5 * (lo + hi)
-        if arc_length(mid) < target:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
-
 #this loop below is decided based on how many stitches we need for teh sqaure (also calcualted)
 #by this cal we determine height for every stitch arc in teh file and then store it ina list
 #and for every next stitch the lenght of the thread being offered is reduce by val Square size
 ARCH_HEIGHT = ti.field(dtype=ti.f32, shape=NUM_STITCHES)
 
-_budget = THREAD_TOTAL
+_budget = THREAD_TOTAL - (2 * SQUARE_SIZE) # subtracting sq size first so that the last stitch is at y=0
 _heights = []
 for _order in range(NUM_STITCHES):
-    _heights.append(max(height_for_length(_budget) * ARCH_SCALE, MIN_ARCH)) #if val goes negative, chose the MIN_ARCH val
+    _heights.append(_budget)
     _budget -= SQUARE_SIZE               # each stitch eats one square of thread
 ARCH_HEIGHT.from_numpy(np.array(_heights, dtype=np.float32))
 
@@ -73,7 +67,7 @@ ARCH_HEIGHT.from_numpy(np.array(_heights, dtype=np.float32))
 #to make each stitch topple we're using rotation from +y axis to +z (1/4 turn)
 
 #rotation will preserve teh arc lenght of the stitch and would prevent it from disappearing under the plane
-TOPPLE_ANGLE = math.pi / 2.0    #axis turn: +Y -> +Z
+TOPPLE_ANGLE = math.pi / 6.0    #axis turn: +Y -> +Z
 
 #ONE FIX: NEED TO DO
 #first rise in Y axis then fall to Z axis in same arc position and then gets taut (in the Z axis tho) - need to fix this so that it goes back to Y axis after being taut
@@ -118,7 +112,7 @@ STITCH_DELAY = STITCH_LIFETIME
 #linked to: the topple AND the taut phase (both run through pull_collapse)
 #controls when the fall LOOKS like it starts more than TOPPLE_START does, bcz TOPPLE_START only releases the far end - this holds back the rest
 #high val, late, low val- early
-PULL_DELAY = 0.4 #manipulate this if you want fall even earlier or later welp
+PULL_DELAY = 0.85 #manipulate this if you want fall even earlier or later welp
 
 #twist consts:
 TWIST_STRANDS = 2
@@ -132,9 +126,9 @@ TWIST_FREQUENCY = 20.0
 
 # Sideways sway settings for the loose thread. 
 # 'WOBBLE_AMP' shoyld b low (like 0.30) because making it higher forces 'NEIGHBOR_SPAN' to check more lanes, making the rendering very slow.
-WOBBLE_AMP = 0.30
-WOBBLE_FREQ = 8.0      #how many waves fit along one stitch
-WOBBLE_SPEED = 2.0     #how fast the wave travels along the thread
+WOBBLE_AMP = 0.005
+WOBBLE_FREQ = 5.0      #how many waves fit along one stitch
+WOBBLE_SPEED = 0.5     #how fast the wave travels along the thread
 
 #Calculates how many neighbor lanes the tallest thread crosses when it falls
 #sideways so it doesn't glitch/disappear. The wobble sways sideways in the SAME
@@ -236,8 +230,119 @@ def pull_collapse(h, progress):
     raw = tm.clamp((progress - front_delay) / (1.0 - front_delay), 0.0, 1.0)
     return raw * raw * (3.0 - 2.0 * raw)     # smoothstep easing
 
+# Obtained from
 @ti.func
-def sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height):
+def sdBezier(pos, A, B, C, maxh):
+    a = B - A
+    b = A - 2.0*B + C
+    c = a * 2.0
+    d = A - pos
+    kk = 1.0/tm.dot(b, b)
+    kx = kk * tm.dot(a,b)
+    ky = kk * (2.0*tm.dot(a,a)+tm.dot(d,b)) / 3.0
+    kz = kk * tm.dot(d,a)
+
+    res = 0.0
+    p = ky - kx * kx
+    p3 = p*p*p
+    q = kx*(2.0*kx*kx-3.0*ky) + kz
+    h = q*q + 4.0*p3
+    if h >= 0.0:
+        h = tm.sqrt(h)
+        x = (tm.vec2(h, -h) - q)/2.0
+        uv = tm.sign(x) * ti.pow(ti.abs(x), tm.vec2(1.0/3.0))
+        t = tm.clamp(uv.x + uv.y - kx, 0.0, maxh)
+        res = tm.dot((d + (c + b * t)* t), (d + (c + b * t)* t))
+    else:
+        z = tm.sqrt(-p)
+        v = ti.acos(q/(p * z * 2.0))/3.0
+        m = tm.cos(v)
+        n = tm.sin(v) * 1.732050808
+        t = tm.clamp(tm.vec3(m+m,-n-m,n-m)*z-kx, 0.0, maxh)
+        res = min(tm.dot((d+(c+b*t.x)*t.x), (d+(c+b*t.x)*t.x)), tm.dot((d+(c+b*t.y)*t.y), (d+(c+b*t.y)*t.y)))
+    return tm.sqrt(res)
+
+
+@ti.func
+def sdBezier2(pos, A, B, C, maxh):
+    a = B - A
+    b = A - 2.0*B + C
+    c = a * 2.0
+    d = A - pos
+    kk = 1.0/tm.dot(b, b)
+    kx = kk * tm.dot(a,b)
+    ky = kk * (2.0*tm.dot(a,a)+tm.dot(d,b)) / 3.0
+    kz = kk * tm.dot(d,a)
+
+    res = tm.vec2(0)
+    p = ky - kx * kx
+    p3 = p*p*p
+    q = kx*(2.0*kx*kx-3.0*ky) + kz
+    q2 = q * q
+    h = q2 + 4.0*p3
+
+    if h >= 0.0:
+        h = tm.sqrt(h)
+        x = (tm.vec2(h, -h) - q)/2.0
+
+        if ti.abs(p) < 0.001:
+            k = (1.0-p3/q2)*p3/q
+            x = tm.vec2(k, -k-q)
+            # float k = (1.0-p3/q2)*p3/q;  // quadratic approx 
+            # x = vec2(k,-k-q);
+        uv = tm.sign(x) * ti.pow(ti.abs(x), tm.vec2(1.0/3.0))
+        t = tm.clamp(uv.x + uv.y - kx, 0.0, maxh)
+        # res = tm.dot((d + (c + b * t)* t), (d + (c + b * t)* t))
+        res = tm.vec2(tm.dot((d + (c + b * t)* t), (d + (c + b * t)* t)), t)
+    else:
+        z = tm.sqrt(-p)
+        v = ti.acos(q/(p * z * 2.0))/3.0
+        m = tm.cos(v)
+        n = tm.sin(v) * 1.732050808
+        t = tm.clamp(tm.vec3(m+m,-n-m,n-m)*z-kx, 0.0, maxh)
+        dis = tm.dot((d+(c+b*t.x)*t.x), (d+(c+b*t.x)*t.x))
+        res = tm.vec2(dis, t.x)
+        dis = tm.dot((d+(c+b*t.y)*t.y), (d+(c+b*t.y)*t.y))
+        if dis < res.x: res = tm.vec2(dis, t.y)
+
+    res.x = tm.sqrt(res.x)
+    return res
+
+@ti.func
+def hash3(n):
+    return tm.fract(tm.sin(tm.vec3(n,n+7.3,n+13.7))*1313.54531)
+
+@ti.func
+def chainedBezier(p, a, b, c, stitch_time):
+    max_h = tm.clamp(stitch_time, 0.0, 1.0)
+    id = 0.0
+    dm = tm.length(p - a)
+    pb = tm.vec3(0)
+    off = 0.0
+
+    for i in range(8):
+        h = sdBezier2(p, a, b, c, max_h)
+        kh = float(i) + h.y/8.0
+
+        # regardless of thickness
+        ra = 0.1 #0.3 - 0.28*kh + 0.3*tm.exp(-1.0*kh)
+        d = h.x - ra
+        dm = min(d, dm)
+
+        # probably editing direction would fix things
+        na = c
+        nb = c + (c - b)
+        dir = tm.normalize(-1.0+2.0*hash3( id+45.0 ))
+        nc = nb + dir * tm.sign(-tm.dot(c - b, dir))
+
+        id += 3.71
+        a = na
+        b = nb
+        c = nc
+    return dm * 0.7
+
+@ti.func
+def sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height, phase):
     a = start_pt
     b = end_pt
     thickness = THICKNESS
@@ -246,12 +351,22 @@ def sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height):
     #simple draw stitch from 0 to 1 it goes till its max height
     max_h = tm.clamp(stitch_time, 0.0, 1.0)
 
-    # var for topple:
-    topple_progress = tm.clamp((stitch_time - TOPPLE_START) / TOPPLE_DURATION, 0.0, 1.0)
+    raw_h = tm.dot(p - a, ba) / tm.dot(ba, ba)
+    h = tm.clamp(raw_h, 0.0, max_h)
 
     # var for taut:
     #taut begins once it has landed and is slack on the plane so the sideways arc is pulled taut
     taut_progress = tm.clamp((stitch_time - TAUT_START) / TAUT_DURATION, 0.0, 1.0)
+    local_taut = pull_collapse(h, taut_progress)
+
+    current_amp = arch_height - (arch_height - LOW_ARCH) * local_taut
+    current_amp = tm.max(current_amp, 1e-3)
+    
+    seed1 = tm.sin(phase * 12.9898) * 43758.5453
+    seed2 = tm.sin(phase * 78.2330) * 43758.5453
+    # # x - ti.floor(x) is equivalent to GLSL's fract(x)
+    rand_amp  = seed1 - ti.floor(seed1)  # Gives a stable random float between [0.0, 1.0]
+    rand_freq = seed2 - ti.floor(seed2)  # Gives a stable random float between [0.0, 1.0]
 
     result = 1e5
     # two strands spiralled around the centreline so the thread reads as twisted
@@ -262,47 +377,14 @@ def sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height):
         p_twisted.y += tm.sin(angle) * TWIST_AMPLITUDE
         p_twisted.z += tm.cos(angle) * TWIST_AMPLITUDE
 
-        raw_h = tm.dot(p_twisted - a, ba) / tm.dot(ba, ba)
-        h = tm.clamp(raw_h, 0.0, max_h)
-        
-        #topple and taut simulatneous from end to start
-        local_topple = pull_collapse(h, topple_progress)
-        local_taut = pull_collapse(h, taut_progress)
+        # theta = math.pi / 4.0
+        peak = a + ba * rand_freq
+        # peak.y += rand_amp * tm.sin(3.0 * theta) * (1.0 - local_taut)
+        peak.z += current_amp
 
-        #rotates the arch from standing (+Y) to flat (+Z). at 0 its in Y axis and at 1 its in Z
-        # fall_angle = local_topple * TOPPLE_ANGLE  (makes it go in y->z only)
-        fall_angle = (local_topple - local_taut) * TOPPLE_ANGLE #helps thread go abck to y axis in taut phase goes from y->z->y)
-        arch_dir_y = tm.cos(fall_angle)
-        arch_dir_z = tm.sin(fall_angle)
+        dist = sdBezier(p_twisted, start_pt, peak, end_pt, max_h) - thickness
+        result = ti.min(result, dist)
 
-        #shrink the sideway lying arc down to the 'LOW_ARCH' baseline based on 'local_taut', pulling the loose thread tight.
-        #shrink size from any lenght (eg 36 to back to shrinked one) (4)
-        #FIXED NOW ITS IN THE Y PLANE
-        current_amp = arch_height - (arch_height - LOW_ARCH) * local_taut
-
-        arch_shape = 4.0 * h * (1.0 - h) #for perfect normal dist type
-        bulge = arch_shape * current_amp
-
-        #WOBBLE
-        #(1 - local_taut): wobble only till taut then not.
-        wobble = (WOBBLE_AMP * (1.0 - local_taut)
-                  * tm.sin(3.14159265 * h)
-                  * tm.sin(WOBBLE_FREQ * h + stitch_time * WOBBLE_SPEED))
-
-        p_bent = p_twisted #make arc in z and y axis bend along the direction of the fall
-        p_bent.y -= bulge * arch_dir_y
-        p_bent.z -= bulge * arch_dir_z
-        p_bent.z -= wobble   #sway shares the z axis with the topple, so it adds on top
-        
-        #calc perpendicular distance to the bent spine
-        pa_bent = p_bent - a
-        perp = pa_bent - ba * h
-        
-        #measure raw distance to the twisted curve
-        exact_dist = tm.length(perp) - thickness
-        
-        result = ti.min(result, exact_dist)
-        
     return result
 
 @ti.func
@@ -315,18 +397,20 @@ def sdf_all_stitches(p, t):
 
         if idx >= IDX_MIN and idx <= IDX_MAX:
             z_pos = idx * SPACING
-            start_pt = tm.vec3(-SQUARE_SIZE/2, 0.0, z_pos)
-            end_pt = tm.vec3(SQUARE_SIZE/2, 0.0, z_pos)
+            start_pt = tm.vec3(-SQUARE_SIZE/2, 3.0, z_pos)
+            end_pt = tm.vec3(SQUARE_SIZE/2, 3.0, z_pos)
 
             order = ti.cast(idx - IDX_MIN, ti.i32)
             arch_height = ARCH_HEIGHT[order]
 
             ##starts from 0 till stitch lifetime val and then freezes
             raw_time = t * DRAW_SPEED - order * STITCH_DELAY
+            phase = order * 0.7 
 
             if raw_time > 0.0:
                 stitch_time = tm.min(raw_time, STITCH_LIFETIME)
-                d = sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height)
+                d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0, end_pt, stitch_time)
+                # d = sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height, phase)
                 curve_dist = ti.min(curve_dist, d)
             
     return curve_dist
@@ -335,6 +419,9 @@ def sdf_all_stitches(p, t):
 def sdf(p, t):
     plane_d = sdPlane(p, tm.vec3(0.0, 1.0, 0.0), 0.0)
     curve_d = sdf_all_stitches(p, t)
+    # start_pt = tm.vec3(-SQUARE_SIZE/2, 0.0, 2.0)
+    # end_pt = tm.vec3(SQUARE_SIZE/2, 0.0, 2.0)
+    # curve_d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0, end_pt, 1.0)
     return ti.min(plane_d, curve_d)
 #--------------------------------------------------------------------------------
 #ray marching and shading
@@ -358,18 +445,43 @@ def rayMarching(origin, dir, steps: ti.i32, t: ti.f32):
             break
     return s
 
+
 @ti.func
-def plane_phong_shading(p, n_geom, cam_pos_val):
-    l = tm.normalize(CAM_POS - p)
-    
+def plane_phong_shading(p, n_geom, t):
+    # Same overhead spot as the thread, so the fabric receives the shadows the
+    # thread casts. The shadow ray starts from the geometric surface, slightly
+    # lifted, rather than from the bump-perturbed normal.
+    l = tm.normalize(SPOT_POS - p)
+    lit = spot_factor(p) #* soft_shadow(p + n_geom * 0.02, l, t)
+
     uv = tm.vec2(p.x, p.z) * TEX_SCALE
     rough = sample_roughness(uv)
+
     n = perturbed_normal(p, n_geom)
-    
+
     amb = tm.mix(0.1, 0.1 - AO_STRENGTH, rough)
-    dif = max(tm.dot(n, l), 0.0) * 0.7
-    
-    return (amb + dif) * tm.vec3(0.95, 0.88, 0.78)
+    dif = max(tm.dot(n, l), 0.0) * 0.7 * lit
+    v = tm.normalize(cam_pos[None] - p)
+    r = tm.reflect(-l, n)
+
+    spec_power = tm.mix(64.0, 8.0, rough)
+    spec_strength = tm.mix(1.0, 0.1, rough)
+    spec = pow(max(tm.dot(r, v), 0.0), spec_power) * spec_strength
+
+    thread_dir = tm.normalize(tm.vec3(1.0, 0.0, 0.0))
+    dotTL = tm.dot(thread_dir, l)
+    dotTV = tm.dot(thread_dir, v)
+    sinTL = tm.sqrt(max(0.0, 1.0 - dotTL * dotTL))
+    sinTV = tm.sqrt(max(0.0, 1.0 - dotTV * dotTV))
+    aniso = pow(max(0.0, dotTL * dotTV + sinTL * sinTV), 20.0) * tm.mix(0.6, 0.05, rough)
+
+    diffuse_mod = tm.mix(1.0, 0.85, rough)
+
+    color = tm.vec3(1.0, 1.0, 1.0)
+    # Specular and sheen are shadowed too - otherwise highlights shine straight
+    # through the shadow the thread casts.
+    total_spec = (spec * (1.0 - ANISO_STRENGTH) + aniso * ANISO_STRENGTH) * lit
+    return (amb + dif * diffuse_mod) * color + tm.vec3(total_spec)
 
 @ti.func
 def phong_shading(p, n, cam_pos_val):
@@ -438,41 +550,87 @@ def get_camera_ray_dir(uv, origin):
 #----------------------------------------------------------------------------
 #render kernel and mainloop
 
+@ti.func
+def soft_shadow(origin, dir, t):
+    # March from the surface toward the light. Instead of only asking "was
+    # anything hit", track how CLOSE the ray passed to the geometry: a near miss
+    # means the point is just inside the penumbra, which is what makes the edge
+    # soft rather than a hard cut. Dividing by s widens that penumbra with
+    # distance, so contact shadows stay tight and distant ones spread out.
+    res = 1.0
+    s = 0.05                    # start off the surface so it cannot shadow itself
+    for i in range(SPOT_STEPS):
+        d = sdf(origin + dir * s, t)
+        res = tm.min(res, SPOT_SOFTNESS * d / s)
+        s += tm.clamp(d, 0.02, 0.35)
+        if res < 0.005 or s > 40.0:
+            break
+    return tm.clamp(res, 0.0, 1.0)
+
+@ti.func
+def spot_factor(p):
+    # Cone falloff: full brightness inside SPOT_INNER, easing to nothing by
+    # SPOT_OUTER, so the pool of light has a soft edge instead of a hard rim.
+    to_p = tm.normalize(p - SPOT_POS)
+    ca = tm.dot(to_p, tm.normalize(SPOT_DIR))
+    return tm.smoothstep(SPOT_OUTER, SPOT_INNER, ca)
+
+
 @ti.kernel
 def render(t: ti.f32):
     for i, j in pixels:
         uv = ti.Vector([i - 0.5 * width, j - 0.5 * height]) / width
+
         origin = cam_pos[None]
-        dir = get_camera_ray_dir(uv, origin)
 
-        s = rayMarching(origin, dir, 400, t)
+        # Look-at basis, rebuilt per frame so the camera can orbit freely. The
+        # old fixed expression only worked from one spot; this aims at the
+        # square's centre from wherever the camera currently is.
+        fwd = tm.normalize(CAM_TARGET - origin)
+        world_up = tm.vec3(0.0, 1.0, 0.0)
+        # Straight overhead, fwd is parallel to world_up and the cross product
+        # collapses - fall back to a fixed axis so the view does not blow up.
+        right = tm.vec3(1.0, 0.0, 0.0)
+        if abs(tm.dot(fwd, world_up)) < 0.999:
+            # cross(world_up, fwd), NOT cross(fwd, world_up) - the latter points
+            # screen-right at world -x and mirrors the whole image, which reads
+            # as the stitches running the wrong way down the row.
+            right = tm.normalize(tm.cross(world_up, fwd))
+        up = tm.cross(fwd, right)
 
-        color = tm.vec3(0.1, 0.1, 0.1) # background
+        dir = tm.normalize(fwd + right * uv.x + up * uv.y)
 
+        s = rayMarching(origin, dir, 10000, t)
+
+        color = tm.vec3(0.1, 0.1, 0.1)
         if s < 50.0:
             p = origin + (dir * s)
             n = normal(p, t)
 
-            if p.y < 0.01:
-                color = plane_phong_shading(p, n, origin)
+            if p.y < 0.01:     # on the plane, not on an arc crest
+                color = plane_phong_shading(p, n, t)
+                color *= tm.vec3(0.95, 0.88, 0.78) # Base plane color (light grey)
 
-                # Draw the 2D square outline (just a black boundary on the plane)
-                square_min = -SQUARE_SIZE / 2.0
-                square_max = SQUARE_SIZE / 2.0
-                bt = BOUNDARY_THICKNESS
+                # Draw the 2D Square (Just black boundary)
+                square_min_x = -SQUARE_SIZE / 2.0
+                square_max_x = SQUARE_SIZE / 2.0
+                square_min_z = -SQUARE_SIZE / 2.0
+                square_max_z = SQUARE_SIZE / 2.0
 
-                on_x_edge = (abs(p.x - square_min) < bt) or (abs(p.x - square_max) < bt)
-                on_z_edge = (abs(p.z - square_min) < bt) or (abs(p.z - square_max) < bt)
+                boundary_thickness = 0.025
 
-                # trim each edge to the other axis' extent so the lines don't
-                # run off to infinity across the plane
-                within_x = (p.x >= square_min - bt) and (p.x <= square_max + bt)
-                within_z = (p.z >= square_min - bt) and (p.z <= square_max + bt)
+                is_on_x_boundary = (abs(p.x - square_min_x) < boundary_thickness) or (abs(p.x - square_max_x) < boundary_thickness)
+                is_on_z_boundary = (abs(p.z - square_min_z) < boundary_thickness) or (abs(p.z - square_max_z) < boundary_thickness)
 
-                if (on_x_edge and within_z) or (on_z_edge and within_x):
-                    color = tm.vec3(0.0, 0.0, 0.0)
+                is_within_z = (p.z >= square_min_z - boundary_thickness) and (p.z <= square_max_z + boundary_thickness)
+                is_within_x = (p.x >= square_min_x - boundary_thickness) and (p.x <= square_max_x + boundary_thickness)
+
+                if (is_on_x_boundary and is_within_z) or (is_on_z_boundary and is_within_x):
+                    color = tm.vec3(0.0, 0.0, 0.0) # Black boundary
+
             else:
-                color = phong_shading(p, n, origin)
+                color = phong_shading(p, n, t)
+                color *= tm.vec3(0.75, 0.52, 0.92) # Reddish curve
 
         pixels[i, j] = color
 
@@ -481,6 +639,8 @@ dragging = False
 last_mouse = (0.0, 0.0)
 
 print("Use mouse for camera rotation")
+
+ZOOM_SPEED = 0.6
 
 frame = 0
 while gui.running:
@@ -496,6 +656,16 @@ while gui.running:
         cam_yaw -= (mx - last_mouse[0]) * ORBIT_SPEED
         cam_pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, cam_pitch + (my - last_mouse[1]) * ORBIT_SPEED))
         last_mouse = (mx, my)
+        update_camera()
+
+    if gui.is_pressed('w', '='):
+            cam_radius = max(2.0, cam_radius - ZOOM_SPEED)
+            update_camera()
+    if gui.is_pressed('s', '-'):
+        cam_radius = min(60.0, cam_radius + ZOOM_SPEED)
+        update_camera()
+    if gui.is_pressed('t'):
+        cam_yaw, cam_pitch = 0.0, PITCH_LIMIT
         update_camera()
 
     render(frame * 0.03)
