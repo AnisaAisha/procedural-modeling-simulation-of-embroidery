@@ -99,7 +99,8 @@ TAUT_START = TOPPLE_START + TOPPLE_DURATION    # taut begins once it has landed
 TAUT_DURATION = 1.0
 
 #total time one stitch takes to finish all its phases before it stays in its final shape constnat
-STITCH_LIFETIME = TAUT_START + TAUT_DURATION
+STITCH_LIFETIME = 0.0#TAUT_START + TAUT_DURATION
+SEGMENT_DELAY = 1.0
 
 #time wait for the previous stitch to fully finish drawing, falling, and pulling taut before starting the next one.
 STITCH_DELAY = STITCH_LIFETIME
@@ -317,15 +318,15 @@ def chainedBezier(p, a, b, c, stitch_time):
     max_h = tm.clamp(stitch_time, 0.0, 1.0)
     id = 0.0
     dm = tm.length(p - a)
-    pb = tm.vec3(0)
-    off = 0.0
+    c = b
+    b = (a + c)/2.0 + 1e-3
 
-    for i in range(8):
+    for i in range(1):
         h = sdBezier2(p, a, b, c, max_h)
-        kh = float(i) + h.y/8.0
+        # kh = float(i) + h.y/8.0
 
         # regardless of thickness
-        ra = 0.1 #0.3 - 0.28*kh + 0.3*tm.exp(-1.0*kh)
+        ra = 0.05 #0.3 - 0.28*kh + 0.3*tm.exp(-1.0*kh)
         d = h.x - ra
         dm = min(d, dm)
 
@@ -333,13 +334,35 @@ def chainedBezier(p, a, b, c, stitch_time):
         na = c
         nb = c + (c - b)
         dir = tm.normalize(-1.0+2.0*hash3( id+45.0 ))
-        nc = nb + dir * tm.sign(-tm.dot(c - b, dir))
+        nc = nb + tm.sign(-tm.dot(c - b, dir))
 
         id += 3.71
         a = na
         b = nb
         c = nc
     return dm * 0.7
+
+# @ti.func
+# def chainedBezier(p, a, b, c, id, max_h):
+#     dm = tm.length(p - a)
+#     h = sdBezier2(p, a, b, c, max_h)
+#     # kh = float(i) + h.y/8.0
+
+#     # regardless of thickness
+#     ra = 0.1 #0.3 - 0.28*kh + 0.3*tm.exp(-1.0*kh)
+#     d = h.x - ra
+#     dm = min(d, dm)
+
+#     # probably editing direction would fix things
+#     na = c
+#     nb = c + (c - b)
+#     dir = tm.normalize(-1.0+2.0*hash3( id+45.0 ))
+#     nc = nb + dir * tm.sign(-tm.dot(c - b, dir))
+
+#     a = na
+#     b = nb
+#     c = nc
+#     return dm * 0.7
 
 @ti.func
 def sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height, phase):
@@ -397,11 +420,11 @@ def sdf_all_stitches(p, t):
 
         if idx >= IDX_MIN and idx <= IDX_MAX:
             z_pos = idx * SPACING
-            start_pt = tm.vec3(-SQUARE_SIZE/2, 3.0, z_pos)
-            end_pt = tm.vec3(SQUARE_SIZE/2, 3.0, z_pos)
+            start_pt = tm.vec3(-SQUARE_SIZE/2, 0.0, z_pos)
+            end_pt = tm.vec3(SQUARE_SIZE/2, 0.0, z_pos)
 
             order = ti.cast(idx - IDX_MIN, ti.i32)
-            arch_height = ARCH_HEIGHT[order]
+            # arch_height = ARCH_HEIGHT[order]
 
             ##starts from 0 till stitch lifetime val and then freezes
             raw_time = t * DRAW_SPEED - order * STITCH_DELAY
@@ -409,19 +432,55 @@ def sdf_all_stitches(p, t):
 
             if raw_time > 0.0:
                 stitch_time = tm.min(raw_time, STITCH_LIFETIME)
-                d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0, end_pt, stitch_time)
+                segment_time = raw_time - order * SEGMENT_DELAY
+                # max_h = tm.clamp(stitch_time, 0.0, 2.0)
+                d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0 + 1e-3, end_pt, segment_time)
                 # d = sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height, phase)
                 curve_dist = ti.min(curve_dist, d)
+
+
+                # id = 0.0
+                # maxh = tm.clamp(stitch_time, 0.0, 1.0)
+                # for i in range(8):
+                #     d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0 + 1e-3, end_pt, id, maxh)
+                #     id += 3.71
+                #     curve_dist = ti.min(curve_dist, d)
             
     return curve_dist
 
 @ti.func
 def sdf(p, t):
+    # put everything here instead of all stitches?
     plane_d = sdPlane(p, tm.vec3(0.0, 1.0, 0.0), 0.0)
     curve_d = sdf_all_stitches(p, t)
-    # start_pt = tm.vec3(-SQUARE_SIZE/2, 0.0, 2.0)
-    # end_pt = tm.vec3(SQUARE_SIZE/2, 0.0, 2.0)
-    # curve_d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0, end_pt, 1.0)
+
+    # curve_d = 1e5
+    # raw_time = t * DRAW_SPEED - STITCH_DELAY
+    # start_pt = tm.vec3(-SQUARE_SIZE/2, 1.0, 2.0)
+    # end_pt = tm.vec3(SQUARE_SIZE/2, 1.0, 2.0)
+
+    # a = start_pt
+    # b = (start_pt + end_pt)/2.0+1e-3
+    # c = end_pt
+
+    # id = 0.0
+    # for i in range(2):
+    #     # curve_d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0+1e-3, end_pt, raw_time)
+    #     segment_time = raw_time - i * SEGMENT_DELAY
+    #     d = chainedBezier(p, a, b, c, segment_time)
+    #     # a = c - 0.5
+    #     # b = a + 0.5
+    #     # c = b + 0.5
+    #     na = c
+    #     nb = c + (c - b)
+    #     dir = tm.normalize(-1.0+2.0*hash3( id+45.0 ))
+    #     nc = nb + dir * tm.sign(-tm.dot(c - b, dir))
+
+    #     id += 3.71
+    #     a = tm.vec3(na.x - 0.5, na.y, na.z)
+    #     b = nb
+    #     c = nc
+    #     curve_d = min(d, curve_d)
     return ti.min(plane_d, curve_d)
 #--------------------------------------------------------------------------------
 #ray marching and shading
