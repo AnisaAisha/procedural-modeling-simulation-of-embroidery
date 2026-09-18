@@ -66,7 +66,7 @@ _budget = THREAD_TOTAL
 _heights = []
 for _order in range(NUM_STITCHES):
     _heights.append(max(height_for_length(_budget) * ARCH_SCALE, MIN_ARCH)) #if val goes negative, chose the MIN_ARCH val
-    _budget -= SQUARE_SIZE               # each stitch eats one square of thread
+    _budget -= SQUARE_SIZE             # each stitch eats one square of thread
 ARCH_HEIGHT.from_numpy(np.array(_heights, dtype=np.float32))
 
 # --- EXPLANATIONS OF STUFF BELOW ----------------------------------------------------------------
