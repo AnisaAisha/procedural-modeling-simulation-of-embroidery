@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 from PIL import Image
 
-DISPLACEMENT_MAP_OUT = "outputs/displacement_map.png"
+DISPLACEMENT_MAP_OUT = "../outputs/displacement_map.png"
 
 # --- NEW COLOR MASK SETTINGS ---
 # Define the RGB color you want to isolate (0.0 to 1.0 scale)

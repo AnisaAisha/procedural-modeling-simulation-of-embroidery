@@ -4,11 +4,11 @@ import cv2
 from PIL import Image
 
 MOTIFS = {
-    "1": "outputs/motif_1_filled.png",
-    "2": "outputs/motif_2_filled.png",
-    "3": "outputs/motif_3_filled.png",
-    "4": "outputs/motif_4_filled.png",
-    "5": "outputs/chadar.png"
+    "1": "../outputs/motif_1_filled.png",
+    "2": "../outputs/motif_2_filled.png",
+    "3": "../outputs/motif_3_filled.png",
+    "4": "../outputs/motif_4_filled.png",
+    "5": "../outputs/chadar.png"
 }
 
 MOTIF_KEY = "5" #change this key for motif needed
@@ -109,8 +109,8 @@ def process_image(image_path, normal_strength):
     height_disp_rgb = np.clip(height_disp * 255.0, 0, 255).astype(np.uint8)
     
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    height_out = "outputs/height_map.png"
-    normal_out = "outputs/normal_map.png"
+    height_out = "../outputs/height_map.png"
+    normal_out = "../outputs/normal_map.png"
     
     Image.fromarray(height_disp_rgb).save(height_out)
     Image.fromarray(normal_rgb).save(normal_out)

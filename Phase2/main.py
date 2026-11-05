@@ -13,11 +13,11 @@ ti.init(arch=ti.gpu, default_ip=ti.i32)
 # PIPELINE CONFIGURATION
 # =============================================================================
 MOTIFS = {
-    "1": "outputs/motif_1_filled.png",
-    "2": "outputs/motif_2_filled.png",
-    "3": "outputs/motif_3_filled.png",
-    "4": "outputs/motif_4_filled.png",
-    "5": "outputs/chadar.png"
+    "1": "../outputs/motif_1_filled.png",
+    "2": "../outputs/motif_2_filled.png",
+    "3": "../outputs/motif_3_filled.png",
+    "4": "../outputs/motif_4_filled.png",
+    "5": "../outputs/chadar.png"
 }
 MOTIF_KEY = "5"
 INPUT_IMAGE = MOTIFS.get(MOTIF_KEY)
@@ -68,8 +68,8 @@ spring_k_shear = 1.0 / 25000.0
 spring_k_bend = 1.0 / 20000.0 
 
 # File Paths for New Maps
-BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
-ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
+BUMP_MAP_PATH = "../outputs/smooth_weave_bump_map.png"
+ROUGHNESS_MAP_PATH = "../outputs/weave_roughness_map.png"
 BUMP_STRENGTH = 0.01
 
 # =============================================================================
@@ -339,9 +339,9 @@ def load_texture_to_field(path, field, mode="RGB"):
 # =============================================================================
 if __name__ == "__main__":
     print("Loading textures...")
-    height_path = "outputs/height_map.png"
+    height_path = "../outputs/height_map.png"
     disp_path = DISPLACEMENT_MAP_OUT
-    normal_path = "outputs/normal_map.png"
+    normal_path = "../outputs/normal_map.png"
     bump_path = os.path.join(here, BUMP_MAP_PATH)
     roughness_path = os.path.join(here, ROUGHNESS_MAP_PATH)
     
@@ -407,7 +407,7 @@ if __name__ == "__main__":
 
     # Bump Map
     if os.path.exists(bump_path):
-        final_bump_path = "outputs/subtracted_bump.png"
+        final_bump_path = "../outputs/subtracted_bump.png"
         subtract(bump_path, height_path, final_bump_path)
         load_texture_to_field(final_bump_path, bump_field, mode="L")
     else:
@@ -415,7 +415,7 @@ if __name__ == "__main__":
 
     # Roughness Map
     if os.path.exists(roughness_path):
-        final_roughness_path = "outputs/subtracted_roughness.png"
+        final_roughness_path = "../outputs/subtracted_roughness.png"
         subtract(roughness_path, height_path, final_roughness_path)
         load_texture_to_field(final_roughness_path, roughness_field, mode="L")
     else:
