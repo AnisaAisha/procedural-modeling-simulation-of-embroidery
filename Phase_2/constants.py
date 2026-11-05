@@ -5,15 +5,26 @@ import taichi as ti
 """
 
 # Window resolution
-RES = (1024, 768)
+RES = (800, 800)
 
 # Grid mesh parameters and variables
-grid_cols = 256
-grid_rows = 256
-TOTAL_SIZE = (12 - 1) * 0.25
-spacing = TOTAL_SIZE / (grid_cols - 1)
+CLOTH_WIDTH = 7.0
+CLOTH_HEIGHT = 7.0
+
+grid_cols = 100
+grid_rows = 100 
+# spacing = 0.25
+# TOTAL_SIZE = (grid_cols - 1) * 0.25
+spacing = CLOTH_HEIGHT / (grid_rows-1)
 num_vertices = grid_cols * grid_rows
 num_triangles = (grid_rows - 1) * (grid_cols - 1) * 2
+
+# Cloth Texture constraints and file paths 
+BUMP_STRENGTH = 0.01
+BUMP_MAP_PATH = "outputs/smooth_weave_bump_map.png"
+ROUGHNESS_MAP_PATH = "outputs/weave_roughness_map.png"
+
+HEIGHT_SCALE = 0.2  # scales the height displacement
 
 # Cloth Simulation Constants
 
