@@ -1,0 +1,988 @@
+import taichi as ti
+import taichi.math as tm
+import math
+import numpy as np
+import cv2
+from PIL import Image
+import random
+
+ti.init(arch=ti.gpu, default_ip=ti.i32)
+#window screen size
+width = height = 600
+pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width, height))
+
+TEX_SCALE = 0.1/4          # smaller = bigger tiles, larger = more repeats
+BUMP_STRENGTH = 0.3      # how strongly the weave perturbs the normal (gradient is pre-normalized to [-1,1])
+AO_STRENGTH = 0.4        # how much rough valleys darken ambient light
+ANISO_STRENGTH = 0.8   # blend amount of the thread-direction sheen
+
+# --- overhead spotlight -------------------------------------------------------
+# One light for the whole scene: shading and cast shadows have to come from the
+# same source or they visibly disagree. Sits directly above the square's centre
+# pointing straight down.
+SPOT_POS = tm.vec3(0.0, 22.0, 0.0)
+SPOT_DIR = tm.vec3(0.0, -1.0, 0.0)
+SPOT_INNER = 0.955   # cos of the angle where the light is still at full strength
+SPOT_OUTER = 0.72    # cos of the angle where it has faded out completely
+SPOT_SOFTNESS = 24.0 # lower = softer, more spread-out shadow edges
+SPOT_STEPS = 48      # shadow-ray march budget (each step is a full SDF call)
+
+# --- Constants ---
+SQUARE_SIZE = 1.0
+SPACING = 0.15
+THICKNESS = 0.05 #thickness of one TWISTED strand
+TEX_SCALE = 0.1
+AO_STRENGTH = 0.1
+BUMP_STRENGTH = 0.3
+# SPOT_POS = tm.vec3(0.0, 22.0, 0.0)
+
+NUM_STITCHES =  int(SQUARE_SIZE / SPACING)
+
+# Stitches are indexed off centre; these give a clean integer order 0..N-1.
+IDX_MIN = -(NUM_STITCHES // 2)            # -6 for 13 stitches
+IDX_MAX = IDX_MIN + NUM_STITCHES - 1      #  6
+
+DRAW_SPEED = 0.7
+# STITCH_DELAY not start sttich until first complete
+
+BOUNDARY_THICKNESS = SQUARE_SIZE * 0.01   # width of the square outline on the plane
+
+#start from max value a thread can take eg (num of stitches =13 so * square size = 26)
+#add 1 square lenght to it to give leverage to last stitch +SQUARE_SIZE = 28)
+THREAD_TOTAL = (NUM_STITCHES * SQUARE_SIZE) + SQUARE_SIZE
+
+#this loop below is decided based on how many stitches we need for teh sqaure (also calcualted)
+#by this cal we determine height for every stitch arc in teh file and then store it ina list
+#and for every next stitch the lenght of the thread being offered is reduce by val Square size
+ARCH_HEIGHT = ti.field(dtype=ti.f32, shape=NUM_STITCHES)
+
+_budget = THREAD_TOTAL - (2 * SQUARE_SIZE) # subtracting sq size first so that the last stitch is at y=0
+_heights = []
+for _order in range(NUM_STITCHES):
+    _heights.append(_budget)
+    _budget -= SQUARE_SIZE               # each stitch eats one square of thread
+ARCH_HEIGHT.from_numpy(np.array(_heights, dtype=np.float32))
+
+# --- EXPLANATIONS OF STUFF BELOW ----------------------------------------------------------------
+#to make each stitch topple we're using rotation from +y axis to +z (1/4 turn)
+
+#rotation will preserve teh arc lenght of the stitch and would prevent it from disappearing under the plane
+TOPPLE_ANGLE = math.pi / 6.0    #axis turn: +Y -> +Z
+
+#ONE FIX: NEED TO DO
+#first rise in Y axis then fall to Z axis in same arc position and then gets taut (in the Z axis tho) - need to fix this so that it goes back to Y axis after being taut
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#UPDATE: DID THIS! will go from y->z -> y in patterns of draw->fall->taut
+
+
+LOW_ARCH = _heights[-1] #since its
+
+# (NEIGHBOR_SPAN is derived below, once the twist constants are known.)
+#-> it will determine that after stitch falls/dispalce on the z axis in the same arc position, how much space of the other stitches to be 
+#drawn is it occupyin, so that whne its getting rendered, it doesn't disappear/glitch (animation draw constraint and precaution)
+
+#local clock and range of each parameter:
+#1. DRAW    : 0 -> 1        thread grows out of its start point
+#2. TOPPLE  : 0.5 -> 1.5   tips from standing to flat on the plane
+#3. TAUT  : 1.5 -> 2.5   sideways slack pulls tight
+
+#to make it realistic topple starts midway of drawing of stitch
+
+#lower = falls sooner, with more of the thread still being laid down behind it.
+#the stitch timing below is independent of the topple settings.
+#0.5 -> falls half drawn | 0.3 -> a third | 0.2 -> almost as soon as it starts
+TOPPLE_START = 0.3     #30 % of the draw completed when the fall begins
+TOPPLE_DURATION = 1.0      #duration of topple higher value means more time to topple
+TAUT_START = TOPPLE_START + TOPPLE_DURATION    # taut begins once it has landed
+TAUT_DURATION = 1.0
+
+# Cubic stitch timing:
+# each stitch takes one normalized time unit to draw.
+# The next stitch starts only after the previous stitch reaches t=1.
+STITCH_DRAW_DURATION = 1.0
+STITCH_DELAY = STITCH_DRAW_DURATION
+
+#how long the start of the thread waits to collapse, making it pull taut from the far end inward like a wave.
+#h=0 start point
+#h=1 end point
+
+#------------------ABOUT PULL_DELAY:--------------------------
+#linked to: the topple AND the taut phase (both run through pull_collapse)
+#controls when the fall LOOKS like it starts more than TOPPLE_START does, bcz TOPPLE_START only releases the far end - this holds back the rest
+#high val, late, low val- early
+PULL_DELAY = 0.85 #manipulate this if you want fall even earlier or later welp
+
+#twist consts:
+TWIST_STRANDS = 2
+#how far the strands sit off-centre - deeper twist look. 0.025 = groove, 0.04 = clearly separate strands. Feeds NEIGHBOR_SPAN below, so it self-corrects.
+
+TWIST_AMPLITUDE = 0.025
+#how many twists = TWIST_FREQUENCY * SQUARE_SIZE / 2pi (20 -> 6.4). Ceiling ~30: past that, TWIST_AMPLITUDE * TWIST_FREQUENCY > ~1.0 makes rays punch through the thread (speckle/gaps). Raise one at a time.
+
+TWIST_FREQUENCY = 20.0
+#diameter is 2*(TWIST_AMPLITUDE + THICKNESS) = 0.15 SPACING
+
+# Sideways sway settings for the loose thread. 
+# 'WOBBLE_AMP' shoyld b low (like 0.30) because making it higher forces 'NEIGHBOR_SPAN' to check more lanes, making the rendering very slow.
+WOBBLE_AMP = 0.005
+WOBBLE_FREQ = 5.0      #how many waves fit along one stitch
+WOBBLE_SPEED = 0.5     #how fast the wave travels along the thread
+
+#Calculates how many neighbor lanes the tallest thread crosses when it falls
+#sideways so it doesn't glitch/disappear. The wobble sways sideways in the SAME
+#axis the topple falls into, so the two stack and BOTH have to be counted here -
+#leave the wobble out and the swaying thread lands outside the search and
+#renders as gaps.
+NEIGHBOR_SPAN = int(math.ceil((max(_heights) + WOBBLE_AMP + TWIST_AMPLITUDE + THICKNESS) / SPACING))
+
+
+#----------------------------------------------------------------------------------------------
+#cubic stitch settings (these replace the old quadratic curve):
+#every stitch is ONE cubic Bezier  A -> B -> C -> D  that runs across its whole row, from the
+#start of the square to the end. A and D come from the row, B and C are randomized per stitch,
+#so every stitch is unique.
+#
+#the randomness is:
+#  SEEDED     - same SEED = same stitches every run. every stitch has its own random stream, so
+#               adding or removing rows does not reshuffle the others
+#  STRUCTURED - we randomize where B/C sit along the stitch, how high the arch is and how far it
+#               bows sideways, NOT raw xyz noise
+#  BOUNDED    - every value lives inside a (min, max) range, so a stitch never folds back, dips
+#               under the fabric or runs into its neighbour
+#  ONE DIAL   - RANDOMNESS: 0.0 = neutral arch, 1.0 = full random range
+
+CURVE_SAMPLES = 48     #line segments used to approximate each cubic (lower = faster, 24 still looks OK)
+
+SEED = 7
+RANDOMNESS = 1.0
+
+#neutral values (what you get at RANDOMNESS = 0)
+BASE_TB = 0.2          #B sits 20% of the way along the stitch
+BASE_TC = 0.8          #C sits 80% of the way along the stitch
+BASE_HEIGHT = 0.15     #height of B / C above the fabric (world units)
+
+#allowed ranges (min, max)
+TB_RANGE = (0.10, 0.30)           #B stays in the first third ...
+TC_RANGE = (0.70, 0.90)           #... and C in the last third, so B always comes before C
+HEIGHT_RANGE = (0.10, 0.21)       #overall arch height
+HEIGHT_SKEW_RANGE = (0.75, 1.25)  #per-control-point multiplier -> lopsided arches
+MIN_CONTROL_HEIGHT = 0.045        #never let the thread sink into the fabric
+
+#sideways bow of B / C (world units). Rows are SPACING apart and the tube radius is 0.05, so only
+#SPACING - 0.10 = 0.05 is free between two neighbours. A cubic only reaches 0.75 x its control
+#point offset, so 0.03 keeps every thread within ~0.0225 of its own row and neighbours never touch.
+SIDE_BOW = 0.03
+# ------------------------------------------------------------------
+# Controlled path perturbation
+#
+# These perturb the already-randomized cubic path without moving
+# its endpoints A/D.
+#
+# More anchors = more opportunities for the path to change direction.
+# The perturbation is spatially smooth because neighboring anchors
+# are interpolated rather than independently applied.
+# ------------------------------------------------------------------
+
+PATH_PERTURBATIONS = 7
+
+PATH_PERTURB_AMP = 0.035
+
+# Where the perturbation is strongest along the path.
+# 0.0 = start, 1.0 = end.
+PATH_PERTURB_PEAK = 0.38
+
+# Controls how quickly perturbations disappear toward the end.
+PATH_PERTURB_DECAY = 2.2
+
+# Controls how strongly perturbations are suppressed near the start.
+# Keeping this > 0 prevents the path from immediately jumping sideways.
+PATH_PERTURB_RAMP = 0.20
+
+# Final perturbation is forced to zero near the endpoint.
+PATH_PERTURB_END = 0.15
+#per-stitch random numbers, filled on the host: [tb, tc, hb, hc, sb, sc]
+STITCH_RAND = ti.Vector.field(6, dtype=ti.f32, shape=NUM_STITCHES)
+
+def generate_stitch_params(seed, randomness):
+    R = float(np.clip(randomness, 0.0, 1.0))
+    out = np.zeros((NUM_STITCHES, 6), dtype=np.float32)
+
+    for order in range(NUM_STITCHES):
+        rng = np.random.default_rng([seed, order])
+
+        #pull a random value from [lo, hi] towards `base` by (1 - R).
+        #R = 0 -> always base, R = 1 -> uniform in [lo, hi]
+        #(we always draw from the rng, so a seed keeps its character whatever RANDOMNESS is)
+        def jit(base, lo, hi):
+            return base + (rng.uniform(lo, hi) - base) * R
+
+        tb = jit(BASE_TB, *TB_RANGE)
+        tc = jit(BASE_TC, *TC_RANGE)
+
+        #shared arch height + a per-control-point skew
+        h = jit(BASE_HEIGHT, *HEIGHT_RANGE)
+        hb = max(h * jit(1.0, *HEIGHT_SKEW_RANGE), MIN_CONTROL_HEIGHT)
+        hc = max(h * jit(1.0, *HEIGHT_SKEW_RANGE), MIN_CONTROL_HEIGHT)
+
+        #independent sideways bow -> C-shaped and S-shaped threads
+        sb = jit(0.0, -SIDE_BOW, SIDE_BOW)
+        sc = jit(0.0, -SIDE_BOW, SIDE_BOW)
+
+        out[order] = [tb, tc, hb, hc, sb, sc]
+
+    STITCH_RAND.from_numpy(out)
+
+generate_stitch_params(SEED, RANDOMNESS)
+
+
+#texture and bump map images
+ROUGHNESS_PATH = "images/weave_roughness_map.png"
+GRADIENT_PATH = "images/weave_bump_map.png"
+
+rough_img = Image.open(ROUGHNESS_PATH).convert("L")
+rough_np = np.asarray(rough_img, dtype=np.float32) / 255.0
+tex_h, tex_w = rough_np.shape
+
+roughness_tex = ti.field(dtype=ti.f32, shape=(tex_w, tex_h))
+roughness_tex.from_numpy(np.ascontiguousarray(rough_np.T))
+
+#func to load both maps
+def load_gradient_map(path):
+    img16 = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    img16 = img16[..., ::-1] # BGR to RGB
+    gx = (img16[..., 0].astype(np.float32) / 65535.0) * 2.0 - 1.0
+    gz = (img16[..., 1].astype(np.float32) / 65535.0) * 2.0 - 1.0
+    return gx, gz
+
+gx_np, gz_np = load_gradient_map(GRADIENT_PATH)
+gradient_tex = ti.Vector.field(2, dtype=ti.f32, shape=(tex_w, tex_h))
+gradient_tex.from_numpy(np.ascontiguousarray(np.stack([gx_np.T, gz_np.T], axis=-1)))
+
+
+@ti.func
+def sample_roughness(uv):
+    u = uv.x - tm.floor(uv.x)
+    v = uv.y - tm.floor(uv.y)
+    fx = u * (tex_w - 1)
+    fy = v * (tex_h - 1)
+    x0 = ti.cast(tm.floor(fx), ti.i32)
+    y0 = ti.cast(tm.floor(fy), ti.i32)
+    x1 = min(x0 + 1, tex_w - 1)
+    y1 = min(y0 + 1, tex_h - 1)
+    tx = fx - x0
+    ty = fy - y0
+
+    c00 = roughness_tex[x0, y0]
+    c10 = roughness_tex[x1, y0]
+    c01 = roughness_tex[x0, y1]
+    c11 = roughness_tex[x1, y1]
+
+    a = c00 * (1 - tx) + c10 * tx
+    b = c01 * (1 - tx) + c11 * tx
+    return a * (1 - ty) + b * ty
+
+@ti.func
+def sample_gradient(uv):
+    u = uv.x - tm.floor(uv.x)
+    v = uv.y - tm.floor(uv.y)
+    fx = u * (tex_w - 1)
+    fy = v * (tex_h - 1)
+    x0 = ti.cast(tm.floor(fx), ti.i32)
+    y0 = ti.cast(tm.floor(fy), ti.i32)
+    x1 = min(x0 + 1, tex_w - 1)
+    y1 = min(y0 + 1, tex_h - 1)
+    tx = fx - x0
+    ty = fy - y0
+
+    c00 = gradient_tex[x0, y0]
+    c10 = gradient_tex[x1, y0]
+    c01 = gradient_tex[x0, y1]
+    c11 = gradient_tex[x1, y1]
+
+    a = c00 * (1 - tx) + c10 * tx
+    b = c01 * (1 - tx) + c11 * tx
+    return a * (1 - ty) + b * ty
+
+@ti.func
+def perturbed_normal(p, n):
+    uv = tm.vec2(p.x, p.z) * TEX_SCALE
+    g = sample_gradient(uv)
+    tangent = tm.vec3(1.0, 0.0, 0.0)
+    bitangent = tm.vec3(0.0, 0.0, 1.0)
+    bumped = n - BUMP_STRENGTH * g.x * tangent - BUMP_STRENGTH * g.y * bitangent
+    return tm.normalize(bumped)
+
+#----------------------------------------------------------------------------------------------
+#sdfs:
+
+@ti.func
+def sdPlane(p, n, h):
+    return tm.dot(p, n) + h
+
+@ti.func
+def pull_collapse(h, progress):
+    #calc settlement (0=loose to 1=down) at thread point 'h'. 
+    #'PULL_DELAY' used so the end (h=1) pulls first and the start (h=0) pulls last, but both finish together when 'progress' hits 1.0.
+    front_delay = (1.0 - h) * PULL_DELAY
+    raw = tm.clamp((progress - front_delay) / (1.0 - front_delay), 0.0, 1.0)
+    return raw * raw * (3.0 - 2.0 * raw)     # smoothstep easing
+
+# Obtained from
+@ti.func
+def sdBezier(pos, A, B, C, maxh):
+    a = B - A
+    b = A - 2.0*B + C
+    c = a * 2.0
+    d = A - pos
+    kk = 1.0/tm.dot(b, b)
+    kx = kk * tm.dot(a,b)
+    ky = kk * (2.0*tm.dot(a,a)+tm.dot(d,b)) / 3.0
+    kz = kk * tm.dot(d,a)
+
+    res = 0.0
+    p = ky - kx * kx
+    p3 = p*p*p
+    q = kx*(2.0*kx*kx-3.0*ky) + kz
+    h = q*q + 4.0*p3
+    if h >= 0.0:
+        h = tm.sqrt(h)
+        x = (tm.vec2(h, -h) - q)/2.0
+        uv = tm.sign(x) * ti.pow(ti.abs(x), tm.vec2(1.0/3.0))
+        t = tm.clamp(uv.x + uv.y - kx, 0.0, maxh)
+        res = tm.dot((d + (c + b * t)* t), (d + (c + b * t)* t))
+    else:
+        z = tm.sqrt(-p)
+        v = ti.acos(q/(p * z * 2.0))/3.0
+        m = tm.cos(v)
+        n = tm.sin(v) * 1.732050808
+        t = tm.clamp(tm.vec3(m+m,-n-m,n-m)*z-kx, 0.0, maxh)
+        res = min(tm.dot((d+(c+b*t.x)*t.x), (d+(c+b*t.x)*t.x)), tm.dot((d+(c+b*t.y)*t.y), (d+(c+b*t.y)*t.y)))
+    return tm.sqrt(res)
+
+
+# ---- cubic Bezier (replaces sdBezier2, the analytic quadratic) ----------------------------
+
+# @ti.func
+# def cubicBezier(A, B, C, D, t):
+#     u = 1.0 - t
+#     return (
+#         u * u * u * A
+#         + 3.0 * u * u * t * B
+#         + 3.0 * u * t * t * C
+#         + t * t * t * D
+#     )
+
+@ti.func
+def cubicBezier(A, B, C, D, t, order):
+    u = 1.0 - t
+
+    base = (
+        u * u * u * A
+        + 3.0 * u * u * t * B
+        + 3.0 * u * t * t * C
+        + t * t * t * D
+    )
+
+    perturbation = path_perturbation(
+        t,
+        A,
+        B,
+        C,
+        D,
+        order
+    )
+
+    return base + perturbation
+
+@ti.func
+def sdSegment(p, a, b):
+    pa = p - a
+    ba = b - a
+    denom = tm.dot(ba, ba)
+    h = 0.0
+    if denom > 0.000001:
+        h = tm.clamp(tm.dot(pa, ba) / denom, 0.0, 1.0)
+    return tm.length(pa - ba * h)
+
+@ti.func
+def sdCubicBezier(p, A, B, C, D, maxh,order):
+    # There is no closed form for the closest point on a cubic, so the curve is cut into
+    # CURVE_SAMPLES short straight pieces and we take the closest one.
+    # maxh works like before: 0.0 = nothing drawn, 0.5 = first half, 1.0 = whole curve
+    # (at 0.0 every piece collapses to the start point, so you still get the little dot there).
+    maxh = tm.clamp(maxh, 0.0, 1.0)
+    result = 1e10
+    previous = A
+    for i in range(CURVE_SAMPLES):
+        t = maxh * (float(i) + 1.0) / float(CURVE_SAMPLES)
+        current = cubicBezier(A, B, C, D, t,order)
+        result = tm.min(result, sdSegment(p, previous, current))
+        previous = current
+    return result
+
+@ti.func
+def hash3(n):
+    return tm.fract(tm.sin(tm.vec3(n,n+7.3,n+13.7))*1313.54531)
+
+@ti.func
+def random_signed(x):
+    h = tm.sin(x * 12.9898 + 78.233) * 43758.5453
+    return tm.fract(h) * 2.0 - 1.0
+
+@ti.func
+def path_perturbation(t, A, B, C, D, order):
+    """
+    Deterministic, spatially-correlated random displacement.
+
+    t = position along the cubic, [0,1]
+
+    The perturbation:
+      - is zero at the endpoints
+      - ramps up toward the beginning/middle
+      - reaches its largest values around the middle
+      - decays toward the end
+      - uses fewer/lower-frequency perturbations toward the end
+    """
+
+    t = tm.clamp(t, 0.0, 1.0)
+
+    # --------------------------------------------------------------
+    # 1. Build a tangent for the baseline cubic.
+    # --------------------------------------------------------------
+
+    u = 1.0 - t
+
+    tangent = (
+        3.0 * u * u * (B - A)
+        + 6.0 * u * t * (C - B)
+        + 3.0 * t * t * (D - C)
+    )
+
+    tangent = tm.normalize(tangent)
+
+    # --------------------------------------------------------------
+    # 2. Find a sideways direction in the plane.
+    #
+    # Your stitches travel primarily along X, so Y is the vertical
+    # direction and cross(Y, tangent) gives us a sideways direction.
+    # --------------------------------------------------------------
+
+    up = tm.vec3(0.0, 1.0, 0.0)
+    side = tm.normalize(tm.cross(up, tangent))
+
+    # --------------------------------------------------------------
+    # 3. Envelope.
+    #
+    # Small at the beginning, strongest around the early/middle
+    # section, then rapidly decreases toward the endpoint.
+    # --------------------------------------------------------------
+
+    start_ramp = tm.smoothstep(
+        0.0,
+        PATH_PERTURB_RAMP,
+        t
+    )
+
+    end_fade = 1.0 - tm.smoothstep(
+        PATH_PERTURB_PEAK,
+        1.0,
+        t
+    )
+
+    envelope = start_ramp * end_fade
+
+    # Additional exponential decay makes the exit portion calmer.
+    envelope *= ti.exp(-PATH_PERTURB_DECAY * t)
+
+    # --------------------------------------------------------------
+    # 4. Determine which random anchors surround t.
+    #
+    # Early anchors are relatively close together.
+    # Later anchors become farther apart, producing fewer changes
+    # toward the end of the curve.
+    # --------------------------------------------------------------
+
+    # Non-linear mapping:
+    # more resolution near t=0, less resolution near t=1.
+    warped_t = 1.0 - ti.pow(1.0 - t, 0.55)
+
+    scaled = warped_t * float(PATH_PERTURBATIONS - 1)
+
+    i0 = ti.cast(tm.floor(scaled), ti.i32)
+    i0 = ti.min(i0, PATH_PERTURBATIONS - 2)
+
+    local_t = scaled - float(i0)
+
+    # --------------------------------------------------------------
+    # 5. Generate two neighboring random values.
+    #
+    # The stitch order is part of the seed, so every stitch gets
+    # a different path while remaining completely deterministic.
+    # --------------------------------------------------------------
+
+    seed0 = (
+        float(order) * 91.731
+        + float(i0) * 37.719
+        + 17.123
+    )
+
+    seed1 = (
+        float(order) * 91.731
+        + float(i0 + 1) * 37.719
+        + 17.123
+    )
+
+    r0 = random_signed(seed0)
+    r1 = random_signed(seed1)
+
+    # Smooth interpolation between neighboring random anchors.
+    smooth_t = local_t * local_t * (3.0 - 2.0 * local_t)
+
+    random_offset = r0 * (1.0 - smooth_t) + r1 * smooth_t
+
+    # --------------------------------------------------------------
+    # 6. Apply the controlled perturbation sideways.
+    # --------------------------------------------------------------
+
+    return side * random_offset * PATH_PERTURB_AMP * envelope
+
+@ti.func
+def chainedCubicBezier(p, a, end, stitch_time, order):
+    # One cubic per stitch, from `a` (start of the row) to `end` (end of the row). B and C are built here, in the stitch's own frame, from the random
+    # numbers generate_stitch_params() stored for this stitch (`order`):
+    #   direction : along the stitch      up : +Y      side : across the row, in the fabric plane
+    max_h = tm.clamp(stitch_time, 0.0, 1.0)
+    dm = tm.length(p - a)
+
+    r = STITCH_RAND[order]
+    ba = end - a
+    L = tm.length(ba)
+    direction = ba / L
+    up = tm.vec3(0.0, 1.0, 0.0)
+    side = tm.cross(up, direction)
+
+    b = a + direction * (L * r[0]) + up * r[2] + side * r[4]
+    c = a + direction * (L * r[1]) + up * r[3] + side * r[5]
+
+    # regardless of thickness
+    ra = 0.05 #0.3 - 0.28*kh + 0.3*tm.exp(-1.0*kh)
+
+    # Cheap early-out: a cubic always stays inside the box spanned by its four control points, so
+    # the distance to that box can never be bigger than the distance to the curve. Far away from
+    # the stitch we return that instead of sampling the curve 48 times. The ray marcher never
+    # steps further than 0.15 anyway, so this does not change what you see - it only saves time.
+    lo = tm.min(tm.min(a, b), tm.min(c, end))
+    hi = tm.max(tm.max(a, b), tm.max(c, end))
+    q = tm.max(lo - p, p - hi)
+    box_d = tm.length(tm.max(q, tm.vec3(0.0))) - ra
+
+    if box_d > 0.25:
+        dm = box_d
+    else:
+        h = sdCubicBezier(p, a, b, c, end, max_h,order)
+        d = h - ra
+        dm = min(d, dm)
+
+    return dm * 0.7
+
+# @ti.func
+# def chainedBezier(p, a, b, c, id, max_h):
+#     dm = tm.length(p - a)
+#     h = sdBezier2(p, a, b, c, max_h)
+#     # kh = float(i) + h.y/8.0
+
+#     # regardless of thickness
+#     ra = 0.1 #0.3 - 0.28*kh + 0.3*tm.exp(-1.0*kh)
+#     d = h.x - ra
+#     dm = min(d, dm)
+
+#     # probably editing direction would fix things
+#     na = c
+#     nb = c + (c - b)
+#     dir = tm.normalize(-1.0+2.0*hash3( id+45.0 ))
+#     nc = nb + dir * tm.sign(-tm.dot(c - b, dir))
+
+#     a = na
+#     b = nb
+#     c = nc
+#     return dm * 0.7
+
+@ti.func
+def sdCustomCurve(p, start_pt, end_pt, stitch_time, arch_height, phase):
+    a = start_pt
+    b = end_pt
+    thickness = THICKNESS
+    ba = b - a
+
+    #simple draw stitch from 0 to 1 it goes till its max height
+    max_h = tm.clamp(stitch_time, 0.0, 1.0)
+
+    raw_h = tm.dot(p - a, ba) / tm.dot(ba, ba)
+    h = tm.clamp(raw_h, 0.0, max_h)
+
+    # var for taut:
+    #taut begins once it has landed and is slack on the plane so the sideways arc is pulled taut
+    taut_progress = tm.clamp((stitch_time - TAUT_START) / TAUT_DURATION, 0.0, 1.0)
+    local_taut = pull_collapse(h, taut_progress)
+
+    current_amp = arch_height - (arch_height - LOW_ARCH) * local_taut
+    current_amp = tm.max(current_amp, 1e-3)
+    
+    seed1 = tm.sin(phase * 12.9898) * 43758.5453
+    seed2 = tm.sin(phase * 78.2330) * 43758.5453
+    # # x - ti.floor(x) is equivalent to GLSL's fract(x)
+    rand_amp  = seed1 - ti.floor(seed1)  # Gives a stable random float between [0.0, 1.0]
+    rand_freq = seed2 - ti.floor(seed2)  # Gives a stable random float between [0.0, 1.0]
+
+    result = 1e5
+    # two strands spiralled around the centreline so the thread reads as twisted
+    for s in ti.static(range(TWIST_STRANDS)):
+        strand_phase = (s / TWIST_STRANDS) * 6.28318530
+        angle = p.x * TWIST_FREQUENCY + strand_phase
+        p_twisted = p
+        p_twisted.y += tm.sin(angle) * TWIST_AMPLITUDE
+        p_twisted.z += tm.cos(angle) * TWIST_AMPLITUDE
+
+        # theta = math.pi / 4.0
+        peak = a + ba * rand_freq
+        # peak.y += rand_amp * tm.sin(3.0 * theta) * (1.0 - local_taut)
+        peak.z += current_amp
+
+        dist = sdBezier(p_twisted, start_pt, peak, end_pt, max_h) - thickness
+        result = ti.min(result, dist)
+
+    return result
+
+@ti.func
+def sdf_all_stitches(p, t):
+    curve_dist = 1e5
+    base_idx = ti.floor(p.z / SPACING + 0.5)
+   #loop to run stitches
+    for offset in range(-NEIGHBOR_SPAN, NEIGHBOR_SPAN + 1):
+        idx = base_idx + offset
+
+        if idx >= IDX_MIN and idx <= IDX_MAX:
+            z_pos = idx * SPACING
+            start_pt = tm.vec3(-SQUARE_SIZE/2, 0.0, z_pos)
+            end_pt = tm.vec3(SQUARE_SIZE/2, 0.0, z_pos)
+
+            order = ti.cast(idx - IDX_MIN, ti.i32)
+            # arch_height = ARCH_HEIGHT[order]
+
+            # Each stitch has its own local clock.
+            # Do not evaluate a stitch before its turn starts.
+            # This removes the zero-length dots at the stitch start point.
+            raw_time = t * DRAW_SPEED - order * STITCH_DELAY
+
+            if raw_time >= 0.0:
+                stitch_time = tm.clamp(
+                    raw_time,
+                    0.0,
+                    STITCH_DRAW_DURATION
+                )
+
+                d = chainedCubicBezier(
+                    p,
+                    start_pt,
+                    end_pt,
+                    stitch_time,
+                    order
+                )
+
+                curve_dist = ti.min(curve_dist, d)
+
+
+                # id = 0.0
+                # maxh = tm.clamp(stitch_time, 0.0, 1.0)
+                # for i in range(8):
+                #     d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0 + 1e-3, end_pt, id, maxh)
+                #     id += 3.71
+                #     curve_dist = ti.min(curve_dist, d)
+            
+    return curve_dist
+
+@ti.func
+def sdf(p, t):
+    # put everything here instead of all stitches?
+    plane_d = sdPlane(p, tm.vec3(0.0, 1.0, 0.0), 0.0)
+    curve_d = sdf_all_stitches(p, t)
+
+    # curve_d = 1e5
+    # raw_time = t * DRAW_SPEED - STITCH_DELAY
+    # start_pt = tm.vec3(-SQUARE_SIZE/2, 1.0, 2.0)
+    # end_pt = tm.vec3(SQUARE_SIZE/2, 1.0, 2.0)
+
+    # a = start_pt
+    # b = (start_pt + end_pt)/2.0+1e-3
+    # c = end_pt
+
+    # id = 0.0
+    # for i in range(2):
+    #     # curve_d = chainedBezier(p, start_pt, (start_pt + end_pt)/2.0+1e-3, end_pt, raw_time)
+    #     segment_time = raw_time - i * SEGMENT_DELAY
+    #     d = chainedBezier(p, a, b, c, segment_time)
+    #     # a = c - 0.5
+    #     # b = a + 0.5
+    #     # c = b + 0.5
+    #     na = c
+    #     nb = c + (c - b)
+    #     dir = tm.normalize(-1.0+2.0*hash3( id+45.0 ))
+    #     nc = nb + dir * tm.sign(-tm.dot(c - b, dir))
+
+    #     id += 3.71
+    #     a = tm.vec3(na.x - 0.5, na.y, na.z)
+    #     b = nb
+    #     c = nc
+    #     curve_d = min(d, curve_d)
+    return ti.min(plane_d, curve_d)
+#--------------------------------------------------------------------------------
+#ray marching and shading
+
+@ti.func
+def normal(p, t):
+    dx = 0.01
+    x = sdf(tm.vec3(p.x + dx, p.y, p.z), t) - sdf(tm.vec3(p.x - dx, p.y, p.z), t)
+    y = sdf(tm.vec3(p.x, p.y + dx, p.z), t) - sdf(tm.vec3(p.x, p.y - dx, p.z), t)
+    z = sdf(tm.vec3(p.x, p.y, p.z + dx), t) - sdf(tm.vec3(p.x, p.y, p.z - dx), t)
+    return tm.normalize(tm.vec3(x, y, z))
+
+@ti.func
+def rayMarching(origin, dir, steps: ti.i32, t: ti.f32):
+    s = 0.0
+    for i in range(steps):
+        p = origin + s * dir
+        d = sdf(p, t)
+        s += tm.min(d, 0.15)
+        if d < 0.001:
+            break
+    return s
+
+
+@ti.func
+def plane_phong_shading(p, n_geom, t):
+    # Same overhead spot as the thread, so the fabric receives the shadows the
+    # thread casts. The shadow ray starts from the geometric surface, slightly
+    # lifted, rather than from the bump-perturbed normal.
+    l = tm.normalize(SPOT_POS - p)
+    lit = spot_factor(p) #* soft_shadow(p + n_geom * 0.02, l, t)
+
+    uv = tm.vec2(p.x, p.z) * TEX_SCALE
+    rough = sample_roughness(uv)
+
+    n = perturbed_normal(p, n_geom)
+
+    amb = tm.mix(0.1, 0.1 - AO_STRENGTH, rough)
+    dif = max(tm.dot(n, l), 0.0) * 0.7 * lit
+    v = tm.normalize(cam_pos[None] - p)
+    r = tm.reflect(-l, n)
+
+    spec_power = tm.mix(64.0, 8.0, rough)
+    spec_strength = tm.mix(1.0, 0.1, rough)
+    spec = pow(max(tm.dot(r, v), 0.0), spec_power) * spec_strength
+
+    thread_dir = tm.normalize(tm.vec3(1.0, 0.0, 0.0))
+    dotTL = tm.dot(thread_dir, l)
+    dotTV = tm.dot(thread_dir, v)
+    sinTL = tm.sqrt(max(0.0, 1.0 - dotTL * dotTL))
+    sinTV = tm.sqrt(max(0.0, 1.0 - dotTV * dotTV))
+    aniso = pow(max(0.0, dotTL * dotTV + sinTL * sinTV), 20.0) * tm.mix(0.6, 0.05, rough)
+
+    diffuse_mod = tm.mix(1.0, 0.85, rough)
+
+    color = tm.vec3(1.0, 1.0, 1.0)
+    # Specular and sheen are shadowed too - otherwise highlights shine straight
+    # through the shadow the thread casts.
+    total_spec = (spec * (1.0 - ANISO_STRENGTH) + aniso * ANISO_STRENGTH) * lit
+    return (amb + dif * diffuse_mod) * color + tm.vec3(total_spec)
+
+@ti.func
+def phong_shading(p, n, cam_pos_val):
+    l = tm.normalize(CAM_POS - p)
+    amb = 0.1
+    dif = max(tm.dot(n, l), 0.0) * 0.7
+    
+    eye = cam_pos_val
+    spec = pow(max(tm.dot(tm.reflect(-l, n), tm.normalize(eye - p)), 0.0), 128.0) * 0.9
+    
+    return (amb + dif + spec) * tm.vec3(0.75, 0.52, 0.92)
+
+
+#---------------------------------------------------------------------
+#camera
+
+CAM_POS = tm.vec3(0.0, 18.0, 0.0)   #for top-down camera view
+#CAM_POS = tm.vec3(0.0, 18.0, -18.0) #for titled camera view
+cam_pos = ti.Vector.field(3, dtype=ti.f32, shape=())
+cam_pos[None] = CAM_POS
+
+# --- Camera State ---
+CAM_TARGET = tm.vec3(0.0, 0.0, 0.0)
+cam_pos = ti.Vector.field(3, dtype=ti.f32, shape=())
+cam_pos[None] = [0.0, 18.0, -18.0] # Initial position
+
+#camera radius for zoom in or out the camera
+cam_radius = 10
+# cam_radius = 25.4
+cam_yaw = 0.0
+cam_pitch = 0.78 # ~45 degrees
+PITCH_LIMIT = math.radians(89.0)
+ORBIT_SPEED = 3.0
+
+def update_camera():
+    x = cam_radius * math.cos(cam_pitch) * math.sin(cam_yaw)
+    y = cam_radius * math.sin(cam_pitch)
+    z = cam_radius * math.cos(cam_pitch) * math.cos(cam_yaw)
+    cam_pos[None] = [CAM_TARGET.x + x, CAM_TARGET.y + y, CAM_TARGET.z + z]
+
+update_camera()  # Initialize camera position
+
+def handle_camera_input(gui, dragging, last_mouse):
+    #for camera rotatiion mouse input
+    if dragging:
+        mx, my = gui.get_cursor_pos()
+        global cam_yaw, cam_pitch
+        cam_yaw -= (mx - last_mouse[0]) * ORBIT_SPEED
+        cam_pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, cam_pitch + (my - last_mouse[1]) * ORBIT_SPEED))
+        update_camera()
+        return (mx, my)
+    return last_mouse
+
+@ti.func
+def get_camera_ray_dir(uv, origin):
+    #calc ray direction in redner kernel
+    fwd = tm.normalize(CAM_TARGET - origin)
+    world_up = tm.vec3(0.0, 1.0, 0.0)
+    
+    right = tm.vec3(1.0, 0.0, 0.0)
+    if abs(tm.dot(fwd, world_up)) < 0.999:
+        right = tm.normalize(tm.cross(world_up, fwd))
+        
+    up = tm.cross(fwd, right)
+    return tm.normalize(fwd + right * uv.x + up * uv.y)
+#----------------------------------------------------------------------------
+#render kernel and mainloop
+
+@ti.func
+def soft_shadow(origin, dir, t):
+    # March from the surface toward the light. Instead of only asking "was
+    # anything hit", track how CLOSE the ray passed to the geometry: a near miss
+    # means the point is just inside the penumbra, which is what makes the edge
+    # soft rather than a hard cut. Dividing by s widens that penumbra with
+    # distance, so contact shadows stay tight and distant ones spread out.
+    res = 1.0
+    s = 0.05                    # start off the surface so it cannot shadow itself
+    for i in range(SPOT_STEPS):
+        d = sdf(origin + dir * s, t)
+        res = tm.min(res, SPOT_SOFTNESS * d / s)
+        s += tm.clamp(d, 0.02, 0.35)
+        if res < 0.005 or s > 40.0:
+            break
+    return tm.clamp(res, 0.0, 1.0)
+
+@ti.func
+def spot_factor(p):
+    # Cone falloff: full brightness inside SPOT_INNER, easing to nothing by
+    # SPOT_OUTER, so the pool of light has a soft edge instead of a hard rim.
+    to_p = tm.normalize(p - SPOT_POS)
+    ca = tm.dot(to_p, tm.normalize(SPOT_DIR))
+    return tm.smoothstep(SPOT_OUTER, SPOT_INNER, ca)
+
+
+@ti.kernel
+def render(t: ti.f32):
+    for i, j in pixels:
+        uv = ti.Vector([i - 0.5 * width, j - 0.5 * height]) / width
+
+        origin = cam_pos[None]
+
+        # Look-at basis, rebuilt per frame so the camera can orbit freely. The
+        # old fixed expression only worked from one spot; this aims at the
+        # square's centre from wherever the camera currently is.
+        fwd = tm.normalize(CAM_TARGET - origin)
+        world_up = tm.vec3(0.0, 1.0, 0.0)
+        # Straight overhead, fwd is parallel to world_up and the cross product
+        # collapses - fall back to a fixed axis so the view does not blow up.
+        right = tm.vec3(1.0, 0.0, 0.0)
+        if abs(tm.dot(fwd, world_up)) < 0.999:
+            # cross(world_up, fwd), NOT cross(fwd, world_up) - the latter points
+            # screen-right at world -x and mirrors the whole image, which reads
+            # as the stitches running the wrong way down the row.
+            right = tm.normalize(tm.cross(world_up, fwd))
+        up = tm.cross(fwd, right)
+
+        dir = tm.normalize(fwd + right * uv.x + up * uv.y)
+
+        s = rayMarching(origin, dir, 10000, t)
+
+        color = tm.vec3(0.1, 0.1, 0.1)
+        if s < 50.0:
+            p = origin + (dir * s)
+            n = normal(p, t)
+
+            if p.y < 0.01:     # on the plane, not on an arc crest
+                color = plane_phong_shading(p, n, t)
+                color *= tm.vec3(0.95, 0.88, 0.78) # Base plane color (light grey)
+
+                # Draw the 2D Square (Just black boundary)
+                square_min_x = -SQUARE_SIZE / 2.0
+                square_max_x = SQUARE_SIZE / 2.0
+                square_min_z = -SQUARE_SIZE / 2.0
+                square_max_z = SQUARE_SIZE / 2.0
+
+                boundary_thickness = 0.025
+
+                is_on_x_boundary = (abs(p.x - square_min_x) < boundary_thickness) or (abs(p.x - square_max_x) < boundary_thickness)
+                is_on_z_boundary = (abs(p.z - square_min_z) < boundary_thickness) or (abs(p.z - square_max_z) < boundary_thickness)
+
+                is_within_z = (p.z >= square_min_z - boundary_thickness) and (p.z <= square_max_z + boundary_thickness)
+                is_within_x = (p.x >= square_min_x - boundary_thickness) and (p.x <= square_max_x + boundary_thickness)
+
+                if (is_on_x_boundary and is_within_z) or (is_on_z_boundary and is_within_x):
+                    color = tm.vec3(0.0, 0.0, 0.0) # Black boundary
+
+            else:
+                color = phong_shading(p, n, t)
+                color *= tm.vec3(0.75, 0.52, 0.92) # Reddish curve
+
+        pixels[i, j] = color
+
+gui = ti.GUI("New Thread structure:", res=(width, height))
+dragging = False
+last_mouse = (0.0, 0.0)
+
+print("Use mouse for camera rotation")
+
+ZOOM_SPEED = 0.6
+
+frame = 0
+while gui.running:
+    while gui.get_event():
+        if gui.event.key == ti.GUI.ESCAPE:
+            gui.running = False
+        elif gui.event.key == ti.GUI.LMB:
+            dragging = (gui.event.type == ti.GUI.PRESS)
+            last_mouse = gui.get_cursor_pos()
+
+    if dragging:
+        mx, my = gui.get_cursor_pos()
+        cam_yaw -= (mx - last_mouse[0]) * ORBIT_SPEED
+        cam_pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, cam_pitch + (my - last_mouse[1]) * ORBIT_SPEED))
+        last_mouse = (mx, my)
+        update_camera()
+
+    if gui.is_pressed('w', '='):
+            cam_radius = max(2.0, cam_radius - ZOOM_SPEED)
+            update_camera()
+    if gui.is_pressed('s', '-'):
+        cam_radius = min(60.0, cam_radius + ZOOM_SPEED)
+        update_camera()
+    if gui.is_pressed('t'):
+        cam_yaw, cam_pitch = 0.0, PITCH_LIMIT
+        update_camera()
+
+    render(frame * 0.03)
+    gui.set_image(pixels.to_numpy())
+    gui.show()
+    frame += 1
+

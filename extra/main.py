@@ -3,9 +3,9 @@
 """
 
 import taichi as ti
-from constants import *
-from textures import *
-from cloth_simulation import *
+from extra.constants import *
+from extra.textures import *
+from extra.cloth_simulation import *
 
 ti.init(arch=ti.gpu)
 

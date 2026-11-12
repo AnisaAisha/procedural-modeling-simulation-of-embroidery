@@ -1,8 +1,8 @@
 import taichi as ti
 import taichi.math as tm
 
-from constants import CAM_POS, TEX_SCALE, AO_STRENGTH, ANISO_STRENGTH
-from geometry import detail_fade, sample_roughness, perturbed_normal
+from extra.constants import CAM_POS, TEX_SCALE, AO_STRENGTH, ANISO_STRENGTH
+from extra.phase_3_integrated.geometry import detail_fade, sample_roughness, perturbed_normal
 
 
 @ti.func

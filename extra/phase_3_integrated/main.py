@@ -1,9 +1,9 @@
 import taichi as ti
 import taichi.math as tm
 
-from constants import CAM_POS, width, height, SQUARE_SIZE
-from geometry import rayMarching, normal
-from shading import phong_shading, plane_phong_shading
+from extra.constants import CAM_POS, width, height, SQUARE_SIZE
+from extra.phase_3_integrated.geometry import rayMarching, normal
+from extra.phase_3_integrated.shading import phong_shading, plane_phong_shading
 
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width, height))
 

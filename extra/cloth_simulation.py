@@ -8,7 +8,7 @@
 """
 
 import taichi as ti
-from constants import *
+from extra.constants import *
 
 # Generate vertices and space them out in the form of a grid
 # Initialize each vertex as a Particle data class (struct definition in constants.py)

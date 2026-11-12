@@ -1,7 +1,7 @@
 import taichi as ti
 import taichi.math as tm
 
-from constants import (
+from extra.constants import (
     CAM_POS,
     SQUARE_SIZE,
     THICKNESS,
